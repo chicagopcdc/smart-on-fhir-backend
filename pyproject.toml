@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "smart-fhir-backend"
+version = "0.1.0"
+description = "SMART on FHIR backend with FastAPI"
+authors = ["You"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.111.0"
+uvicorn = { extras = ["standard"], version = "^0.29.0" }
+authlib = "^1.3.0"
+python-dotenv = "^1.0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
