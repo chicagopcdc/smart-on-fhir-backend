@@ -2,8 +2,8 @@ import os
 
 
 FRONTEND_HOSTNAME = "http://localhost:3000" # TODO make it a env variable
-EPIC_SANDBOX_CLIENT_ID = ""
-EPIC_SANDBOX_CLIENT_SECRET = ""
+EPIC_SANDBOX_CLIENT_ID = "29905d7f-6c2b-488b-9312-cc75d41b1e84"
+EPIC_SANDBOX_CLIENT_SECRET = "9W7OB02VeJfU+9RpTa6jaaS5XdH1PSlPOOqJClzcFeerXlNZW/xNihSQJL/2E6gBBVS4uxRLvf/xvUcq3cl/Qw=="
 
 # EHR configurations keyed by actual issuer URLs
 EHR_CONFIGS = {

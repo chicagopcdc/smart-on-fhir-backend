@@ -12,17 +12,26 @@ import base64
 import config
 import service
 
+from functools import lru_cache
+from typing import List, Optional
+from fastapi import  Query
+import csv, io
+
+
 
 app = FastAPI()
 
 origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# app.add_middleware(
+#     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+# )
 
 state_store = {}  # replace with secure store later
 
@@ -145,17 +154,87 @@ async def get_all_resource(access_token: str, fhir_patient_id: str, state: str):
 
 
 
+# LANTERN_CSV_URL = "https://lantern.healthit.gov/api/daily/download"
+
+# @app.get("/lantern-csv")
+# async def get_lantern_csv():
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             response = await client.get(LANTERN_CSV_URL)
+#             response.raise_for_status()
+#         return Response(content=response.text, media_type="text/csv")
+#     except httpx.HTTPError as e:
+#         return Response(content=f"Error fetching CSV: {str(e)}", status_code=500)
+
+
+
+# URL to fetch the daily LANTERN CSV data
 LANTERN_CSV_URL = "https://lantern.healthit.gov/api/daily/download"
 
-@app.get("/lantern-csv")
-async def get_lantern_csv():
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(LANTERN_CSV_URL)
-            response.raise_for_status()
-        return Response(content=response.text, media_type="text/csv")
-    except httpx.HTTPError as e:
-        return Response(content=f"Error fetching CSV: {str(e)}", status_code=500)
+# Maximum allowed number of rows per page in the response
+PAGE_SIZE_MAX = 1000
 
+# Cache the result of the function to avoid re-fetching the data on every request
+@lru_cache(maxsize=1)
+def load_dataset() -> List[dict]:
+    # Create a synchronous HTTP client with a 30-second timeout
+    with httpx.Client(timeout=30.0) as client:
+        # Send a GET request to download the CSV data
+        r = client.get(LANTERN_CSV_URL)
+        # Raise an exception if the request failed (non-2xx status)
+        r.raise_for_status()
+    
+    # Parse the CSV content into a list of dictionaries
+    reader = csv.DictReader(io.StringIO(r.text))
+    # Return only rows that have a non-empty "url" field
+    return [row for row in reader if row.get("url")]
 
+# Define an HTTP GET endpoint at path /lantern-endpoints
+@app.get("/lantern-endpoints")
+async def lantern_endpoints(
+    # Query string for searching endpoints, optional (default: empty string)
+    query: str = Query("", description="Free-text search, case-insensitive"),
+    # Page number for pagination (must be at least 1)
+    page: int = Query(1, ge=1, description="1-based page index"),
+    # Number of rows per page (between 1 and PAGE_SIZE_MAX), accessed via query param `pageSize`
+    page_size: int = Query(
+        500, ge=1, le=PAGE_SIZE_MAX, alias="pageSize",
+        description="Rows per page",
+    ),
+):
+    # Load the full dataset from cache or fetch if not cached
+    data = load_dataset()
 
+    # If a query is provided, filter the dataset by matching URL or name (case-insensitive)
+    if query:
+        q = query.lower()
+        data = [
+            row for row in data
+            if q in row["url"].lower() or q in row["api_information_source_name"].lower()
+        ]
+
+    # Calculate start and end indices for pagination
+    start, end = (page - 1) * page_size, page * page_size
+    # Get the slice of data for the current page
+    slice_ = data[start:end]
+
+    # Build a list of rows with index, URL, and name for the response
+    rows = [
+        {
+            "idx": idx,  # Global index of the row
+            "url": r["url"],  # Endpoint URL
+            "name": r["api_information_source_name"],  # Name of the API source
+        }
+        for idx, r in enumerate(slice_, start=start)
+    ]
+
+    # Return the paginated result as a JSON response
+    return JSONResponse(
+        {
+            "page": page,  # Current page number
+            "pageSize": page_size,  # Page size
+            "totalRows": len(data),  # Total number of matching rows
+            "hasMore": end < len(data),  # Whether there are more pages
+            "rows": rows,  # The data rows for this page
+        }
+    )
