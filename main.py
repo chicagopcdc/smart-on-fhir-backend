@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.datastructures import URL
@@ -13,12 +13,19 @@ import config
 import service
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from functools import lru_cache
 from typing import List, Optional
 from fastapi import  Query
 import csv, io
 
-from db import engine
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db import engine, get_session, delete_expired_states
+from models import OAuthState, ProviderToken, utcnow
+from providers.models import TokenSet
+from settings import get_settings
 
 
 @asynccontextmanager
@@ -42,8 +49,6 @@ app.add_middleware(
 #     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 # )
 
-state_store = {}  # replace with secure store later
-
 class CallbackData(BaseModel):
     code: str
     state: str
@@ -51,13 +56,27 @@ class CallbackData(BaseModel):
 
 # http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth
 @app.get("/auth/start")
-async def start_auth(provider: str, iss: str):
+async def start_auth(
+    provider: str, iss: str, session: AsyncSession = Depends(get_session)
+):
     ehr = config.EHR_CONFIGS.get(provider)
     if not ehr:
         return JSONResponse({"error": "Unknown or unsupported issuer (iss)"}, status_code=400)
 
+    # Opportunistic sweep so expired anti-CSRF state does not accumulate.
+    await delete_expired_states(session)
+
     state = secrets.token_urlsafe(16)
-    state_store[state] = {"iss": iss, "provider": provider}
+    ttl_seconds = get_settings().oauth_state_ttl_seconds
+    session.add(
+        OAuthState(
+            state=state,
+            iss=iss,
+            provider=provider,
+            expires_at=utcnow() + timedelta(seconds=ttl_seconds),
+        )
+    )
+    await session.commit()
 
     # scope and aud can be omitted
     auth_url = (
@@ -75,17 +94,55 @@ async def start_auth(provider: str, iss: str):
 # f"aud={iss + ehr['fhir_server_url']}"
 
 
+async def persist_token(
+    session: AsyncSession, *, provider: str, iss: str, token_set: TokenSet
+) -> ProviderToken:
+    """Insert or update the stored token for a patient/provider/issuer.
+
+    The (patient_fhir_id, provider, iss) triple is unique, so re-authenticating
+    updates the existing row instead of leaving a stale token behind.
+    """
+    patient_fhir_id = token_set.patient or ""
+    existing = await session.execute(
+        select(ProviderToken).where(
+            ProviderToken.patient_fhir_id == patient_fhir_id,
+            ProviderToken.provider == provider,
+            ProviderToken.iss == iss,
+        )
+    )
+    token = existing.scalar_one_or_none()
+    if token is None:
+        token = ProviderToken(
+            patient_fhir_id=patient_fhir_id, provider=provider, iss=iss
+        )
+        session.add(token)
+
+    token.access_token = token_set.access_token
+    token.refresh_token = token_set.refresh_token
+    token.scope = token_set.scope
+    token.expires_at = (
+        utcnow() + timedelta(seconds=token_set.expires_in)
+        if token_set.expires_in is not None
+        else None
+    )
+    await session.commit()
+    return token
+
+
 @app.post("/auth/callback")
-async def handle_callback(callback_data: CallbackData):
+async def handle_callback(
+    callback_data: CallbackData, session: AsyncSession = Depends(get_session)
+):
     code = callback_data.code
     state = callback_data.state
 
-    print(state_store)
-    if state not in state_store:
+    # State now lives in Postgres, so it survives restarts and is shared across workers.
+    state_row = await session.get(OAuthState, state)
+    if state_row is None or state_row.is_expired:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
-    iss = state_store[state]["iss"]
-    provider = state_store[state]["provider"]
+    iss = state_row.iss
+    provider = state_row.provider
     ehr = config.EHR_CONFIGS.get(provider)
 
     credentials = f"{ehr['client_id']}:{ehr['client_secret']}".encode("utf-8")
@@ -106,33 +163,34 @@ async def handle_callback(callback_data: CallbackData):
         response = await client.post(iss + ehr["token_url"], data=data, headers=headers)
         token_response = response.json()
 
-    # print(token_response) TODO persist the refresh token information in the DB
-    # {
-    #     "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJ1cm46b2lkOjEuMi44NDAuMTE0MzUwLjEuMTMuMC4xLjcuMy42ODg4ODQuMTAwIiwiY2xpZW50X2lkIjoiMjk5MDVkN2YtNmMyYi00ODhiLTkzMTItY2M3NWQ0MWIxZTg0IiwiZXBpYy5lY2kiOiJ1cm46ZXBpYzpPcGVuLkVwaWMtY3VycmVudCIsImVwaWMubWV0YWRhdGEiOiJNOFFHLWxNZmZCUWR0Nm1IR3RIWVJlLWZIWlNVbVN5cklmS0FjR2syRW15MWpuNFE3VUN0a0RZdGdfTzFzMjJkaVhLZVZ1T3RtNkY5b1lQaThwbjI2eGFVMlN2MU5hYnRiUklueUQ4OUFqYkpDSGwxX2NocjE1OFdkQTQtUTZFSiIsImVwaWMudG9rZW50eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzQ1NjE4MzI3LCJpYXQiOjE3NDU2MTQ3MjcsImlzcyI6InVybjpvaWQ6MS4yLjg0MC4xMTQzNTAuMS4xMy4wLjEuNy4zLjY4ODg4NC4xMDAiLCJqdGkiOiJjY2ZkNzBlMy1jOGQ2LTQzOTUtYmEzMy00ODM5NWRmZjhmNGMiLCJuYmYiOjE3NDU2MTQ3MjcsInN1YiI6ImViNEdpYTdGeWlqdFBtWGtydGpScFB3MyJ9.iMoSaniowx6ltfsogPZlPiFfuCst0WOMDQHvayRga37TuTZR8EzWHScDaX6jHuBhn5cGeSkLzR5qAoOt6mAp9yK0CC2RaXC7J0fBL79yMUdRsx9LxFxW-L7DAkztbPbdror5SKCVtesAafWP_Xbup818Mt06C2m-9rL4JE_6B310dDyE46kGnKYZ-MSZBvq4xaRY0ySGrVhvGBF-7qhQ0TyzuYzCTjS3yPi7itCi_qHENcteg5OzNZVE0OtI75YqR-T8s1U-cOa2XlixRsnQi54mK7LFV5zcJq29T6c-talIp6xx-RiM0VbkXYo2W4_UZBTQwEZYMqsnPxpTe3Yy8A",
-    #     "token_type": "Bearer",
-    #     "expires_in": 3600,
-    #     "scope": "patient/Binary.read patient/DocumentReference.read patient/Medication.read patient/MedicationRequest.read patient/Observation.read patient/Patient.read launch/patient offline_access openid profile",
-    #     "state": "D3qwA4oGb_h1Gm3cbvOFpQ",
-    #     "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJ1cm46b2lkOjEuMi44NDAuMTE0MzUwLjEuMTMuMC4xLjcuMy42ODg4ODQuMTAwIiwiY2xpZW50X2lkIjoiMjk5MDVkN2YtNmMyYi00ODhiLTkzMTItY2M3NWQ0MWIxZTg0IiwiZXBpYy5lY2kiOiJ1cm46ZXBpYzpPcGVuLkVwaWMtY3VycmVudCIsImVwaWMubWV0YWRhdGEiOiJDOVVGS3lsZnlKLURla0J3OGcwazRRUGFLZ3RvYndReW1mN0s0SHZVQ1RRS2JpWmZramdLNjR2TjEzcVVUU3NoR0RrdHNVS0JLV3kyWUNGaHZ2ODJoaW9MN3BZTDlPdFBFVGwyQy1PeVlnajhzVG01aWNvV2RxcUh1ZEZ2LXdfWSIsImVwaWMudG9rZW50eXBlIjoicmVmcmVzaCIsImlhdCI6MTc0NTYxNDcyNywiaXNzIjoidXJuOm9pZDoxLjIuODQwLjExNDM1MC4xLjEzLjAuMS43LjMuNjg4ODg0LjEwMCIsImp0aSI6IjNhNjJjOGI3LThmMDQtNDc5ZS04OWYwLTgxM2M2YThlYmE3NSIsIm5iZiI6MTc0NTYxNDcyNywic3ViIjoiZWI0R2lhN0Z5aWp0UG1Ya3J0alJwUHczIn0.pAyh0vzZbeqo73jIxRM3kFSBEDmSz-T5FI4t610SWGrLwWwzyd6UNn8tPOZeBXXT0SG3jpZnN0sr2_YpJ04uRf1CxpiIJkQ2XGlFX74RQEJL-6MFy_k-DbMJo8z89LCbFWCiwKi13S7ROU4tLjRI_duOtc2qfxOIJj1_uoWssYUjFDmY69xqdsWY4kEaXkBssRqyQclCddhpCmyRgzFVab-tBE4EELlC-NBW9OTpuc7qHP0xpsHSaiBWi-dEtWP2pt0V8Gv6t4h_AAxHeu98H53ToKwS7s2OoxJSthS7NotB1zyfcm2SnotEzgDjDIavEAr2iylEF-7E0SF5f9Y8EA",
-    #     "__epic.dstu2.patient": "TnOZ.elPXC6zcBNFMcFA7A5KZbYxo2.4T-LylRk4GoW4B",
-    #     "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6InZDTW9mQzZQTTZFZlF1NHBQQ0FIVUxLZUQrWVJpMXVuWStrNVRLNmtqcm89IiwidHlwIjoiSldUIn0.eyJhdWQiOiIyOTkwNWQ3Zi02YzJiLTQ4OGItOTMxMi1jYzc1ZDQxYjFlODQiLCJleHAiOjE3NDU2MTUwMjcsImlhdCI6MTc0NTYxNDcyNywiaXNzIjoiaHR0cHM6Ly9maGlyLmVwaWMuY29tL2ludGVyY29ubmVjdC1maGlyLW9hdXRoL29hdXRoMiIsInN1YiI6ImVyWHVGWVVmdWNCWmFyeVZrc1lFY01nMyJ9.eTnQ11gaaD9daWhdv6NkKI_FgiyDRzRMKoM3_esddLd0bPjXRunGHnPt7hs3aWa9MqPU1ABlSf71dTpw2XZ8KDHskbU37Qh98Txh7inJAegIs9ESQ_edGoxnCz7AKrTBH1xLvdy-Wrz5Xhud_cSj9EULuVH4jaqHq4FIJDxUj16EE3-6Qutm9-irFUoooladuLBziurLbvQ_7Ej6f0ZNSoD_TTvwFt4oPzQQod6EsJXSHV4vUjt8qfIgDVf5Sm-qX4zfXUvRTAK9DyjdSff_GJSVwDbo8Qgpr8GWjLeyLLmrSDYSnj_HlFftoPIwxurkDzZmOziRcOxut1B01buecQ",
-    #     "patient": "erXuFYUfucBZaryVksYEcMg3"
-    # }
-    # return JSONResponse(token_response)
+    if response.status_code != 200 or "access_token" not in token_response:
+        raise HTTPException(status_code=400, detail="Token exchange failed")
+
+    # TokenSet drops vendor-specific keys (e.g. __epic.dstu2.patient) before storage.
+    token_set = TokenSet.model_validate(token_response)
+    await persist_token(session, provider=provider, iss=iss, token_set=token_set)
 
     return JSONResponse(content={"success": True}, status_code=200)
 
 
 @app.get("/fhir_resources")
-async def get_all_resource(access_token: str, fhir_patient_id: str, state: str):
+async def get_all_resource(
+    access_token: str,
+    fhir_patient_id: str,
+    state: str,
+    session: AsyncSession = Depends(get_session),
+):
     if not access_token or not fhir_patient_id or not state:
         return JSONResponse({"error": "Missing or unsupported parameters"}, status_code=400)
 
-    iss = state_store[state]["iss"]
-    provider = state_store[state]["provider"]
-    ehr = config.EHR_CONFIGS.get(provider)
+    state_row = await session.get(OAuthState, state)
+    if state_row is None:
+        return JSONResponse({"error": "Invalid or expired state"}, status_code=400)
 
-    resources = await service.fetch_fhir_resources(access_token, iss + ehr["fhir_server_url"], fhir_patient_id)
+    ehr = config.EHR_CONFIGS.get(state_row.provider)
+    resources = await service.fetch_fhir_resources(
+        access_token, state_row.iss + ehr["fhir_server_url"], fhir_patient_id
+    )
     return JSONResponse(resources)
 
 
