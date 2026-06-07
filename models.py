@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -52,6 +52,9 @@ class OAuthState(Base):
     """
 
     __tablename__ = "oauth_state"
+    # The TTL sweep filters on expires_at; index it so the sweep stays a
+    # range scan as the table grows.
+    __table_args__ = (Index("ix_oauth_state_expires_at", "expires_at"),)
 
     state: Mapped[str] = mapped_column(String(64), primary_key=True)
     iss: Mapped[str] = mapped_column(String(512))
