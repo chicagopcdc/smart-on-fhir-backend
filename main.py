@@ -12,14 +12,23 @@ import base64
 import config
 import service
 
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import List, Optional
 from fastapi import  Query
 import csv, io
 
+from db import engine
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Nothing to warm up on startup; on shutdown, release the connection pool.
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(lifespan=lifespan)
 
 origins = ["http://localhost:3000"]
 app.add_middleware(
