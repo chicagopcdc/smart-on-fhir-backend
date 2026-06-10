@@ -1,14 +1,29 @@
-"""Shared fixtures and a minimal concrete provider for the discovery tests."""
+"""Shared fixtures and a minimal concrete provider for the test suite."""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-import pytest
+from cryptography.fernet import Fernet
 
-from providers.base import FHIRProvider
-from providers.models import SMARTConfiguration, TokenSet
+# Settings validate on first use. Force a throwaway encryption key and an
+# offline SQLite DSN before importing any module that reads them — assigned
+# unconditionally so a key or DSN exported in the developer's shell can never
+# leak into the suite.
+os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from models import Base  # noqa: E402
+from providers.base import FHIRProvider  # noqa: E402
+from providers.models import SMARTConfiguration, TokenSet  # noqa: E402
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -46,6 +61,24 @@ def epic_smart_config() -> dict:
 @pytest.fixture
 def public_smart_config() -> dict:
     return _load_json("smarthealthit_smart_config.json")
+
+
+@pytest_asyncio.fixture
+async def db_session():
+    """An isolated in-memory SQLite session with the schema created.
+
+    StaticPool keeps a single connection so the in-memory database persists for
+    the life of the test; the schema is built from the ORM metadata.
+    """
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
