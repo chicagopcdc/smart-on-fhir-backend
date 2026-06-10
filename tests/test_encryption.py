@@ -12,9 +12,9 @@ import os
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
-import crypto
-from models import ProviderToken
-from settings import get_settings
+from app.core import crypto
+from app.auth.models import ProviderToken
+from app.core.config import get_settings
 
 
 def test_fernet_round_trip():

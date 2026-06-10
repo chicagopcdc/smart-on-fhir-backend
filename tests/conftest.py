@@ -21,9 +21,9 @@ import pytest_asyncio  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from models import Base  # noqa: E402
-from providers.base import FHIRProvider  # noqa: E402
-from providers.models import SMARTConfiguration, TokenSet  # noqa: E402
+from app.auth.models import Base  # noqa: E402
+from app.providers.base import FHIRProvider  # noqa: E402
+from app.providers.models import SMARTConfiguration, TokenSet  # noqa: E402
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 

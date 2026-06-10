@@ -16,7 +16,7 @@ import time
 import httpx
 from pydantic import ValidationError
 
-from providers.models import SMARTConfiguration
+from app.providers.models import SMARTConfiguration
 
 _WELL_KNOWN_PATH = "/.well-known/smart-configuration"
 

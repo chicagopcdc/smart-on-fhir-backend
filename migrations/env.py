@@ -18,8 +18,8 @@ if config.config_file_name is not None:
 
 # Pull the connection URL from application settings rather than hardcoding it in
 # alembic.ini, so the DSN (and any future credentials) stay in the environment.
-from models import Base  # noqa: E402
-from settings import get_settings  # noqa: E402
+from app.auth.models import Base  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
 
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 

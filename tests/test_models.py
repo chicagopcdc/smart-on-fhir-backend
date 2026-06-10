@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from providers.models import SMARTConfiguration, TokenSet
+from app.providers.models import SMARTConfiguration, TokenSet
 
 
 def test_real_epic_doc_parses_with_recommended_endpoints_absent(epic_smart_config):

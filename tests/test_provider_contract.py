@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from providers.base import FHIRProvider
-from providers.models import SMARTConfiguration
+from app.providers.base import FHIRProvider
+from app.providers.models import SMARTConfiguration
 
 
 def test_base_provider_cannot_be_instantiated():

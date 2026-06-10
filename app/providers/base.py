@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from discovery import SMARTDiscovery
-from providers.models import SMARTConfiguration, TokenSet
+from app.providers.discovery import SMARTDiscovery
+from app.providers.models import SMARTConfiguration, TokenSet
 
 
 class FHIRProvider(ABC):
