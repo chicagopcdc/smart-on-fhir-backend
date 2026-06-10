@@ -17,10 +17,10 @@ import respx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import main
-from db import get_session, persist_token
-from models import Base, OAuthState, ProviderToken, utcnow
-from providers.models import TokenSet
+from app import main
+from app.core.db import get_session, persist_token
+from app.auth.models import Base, OAuthState, ProviderToken, utcnow
+from app.providers.models import TokenSet
 
 ISS = "https://fhir.epic.com/interconnect-fhir-oauth"
 TOKEN_URL = ISS + "/oauth2/token"

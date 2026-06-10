@@ -15,7 +15,7 @@ from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
-from settings import get_settings
+from app.core.config import get_settings
 
 
 class TokenEncryptionError(RuntimeError):

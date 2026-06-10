@@ -7,8 +7,8 @@ from pydantic import BaseModel
 import secrets
 import httpx
 
-import config
-import service
+from app.providers import config
+from app.fhir import service
 
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -19,10 +19,10 @@ import csv, io
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import engine, get_session, delete_expired_states, persist_token
-from models import OAuthState, ProviderToken
-from providers.models import TokenSet
-from settings import get_settings
+from app.core.db import engine, get_session, delete_expired_states, persist_token
+from app.auth.models import OAuthState, ProviderToken
+from app.providers.models import TokenSet
+from app.core.config import get_settings
 
 
 @asynccontextmanager

@@ -6,8 +6,8 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from db import delete_expired_states
-from models import OAuthState, utcnow
+from app.core.db import delete_expired_states
+from app.auth.models import OAuthState, utcnow
 
 
 def _state(name: str, *, expires_in: timedelta) -> OAuthState:

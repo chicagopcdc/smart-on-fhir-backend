@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from models import OAuthState, ProviderToken, utcnow
-from providers.models import TokenSet
-from settings import get_settings
+from app.auth.models import OAuthState, ProviderToken, utcnow
+from app.providers.models import TokenSet
+from app.core.config import get_settings
 
 # One engine per process. ``pool_pre_ping`` checks a connection before handing it
 # out, so a Postgres restart or a dropped idle connection surfaces as a clean

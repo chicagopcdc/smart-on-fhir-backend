@@ -13,7 +13,7 @@ from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
-import crypto
+from app.core import crypto
 
 
 def utcnow() -> datetime:

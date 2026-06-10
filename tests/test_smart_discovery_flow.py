@@ -12,7 +12,7 @@ import httpx
 import pytest
 import respx
 
-from discovery import (
+from app.providers.discovery import (
     DiscoveryNotFoundError,
     DiscoveryParseError,
     DiscoveryUnreachableError,
