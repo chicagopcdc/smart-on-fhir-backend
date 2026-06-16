@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     # Lifetime of an OAuth state row before the TTL sweep removes it.
     oauth_state_ttl_seconds: int = 600
 
+    # Base URL of the frontend that handles the OAuth redirect. The provider
+    # registration's redirect_uri is built from this, so it must match what is
+    # registered with each EHR.
+    frontend_hostname: str = "http://localhost:3000"
+
+    # OAuth client credentials, registered per environment with the EHR. These
+    # are secrets and so live in the environment, never in source. Optional
+    # because a deployment only configures the providers it actually uses.
+    epic_sandbox_client_id: str | None = None
+    epic_sandbox_client_secret: str | None = None
+    epic_client_id: str | None = None
+    epic_client_secret: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

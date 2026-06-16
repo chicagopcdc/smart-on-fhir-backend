@@ -1,30 +1,30 @@
-import os
+from app.core.config import get_settings
 
+_settings = get_settings()
+_redirect_uri = _settings.frontend_hostname.rstrip("/") + "/auth/callback"
 
-FRONTEND_HOSTNAME = "http://localhost:3000" # TODO make it a env variable
-EPIC_SANDBOX_CLIENT_ID = "29905d7f-6c2b-488b-9312-cc75d41b1e84"
-EPIC_SANDBOX_CLIENT_SECRET = "9W7OB02VeJfU+9RpTa6jaaS5XdH1PSlPOOqJClzcFeerXlNZW/xNihSQJL/2E6gBBVS4uxRLvf/xvUcq3cl/Qw=="
-
-# EHR configurations keyed by actual issuer URLs
+# Per-provider registration data that a SMART server does NOT advertise:
+# the client credentials, where the EHR redirects back to, and the scopes we
+# request. Endpoints and capabilities are discovered at runtime instead.
 EHR_CONFIGS = {
-    "EPIC" : { # UChicago "https://interconapps.uchospitals.edu/PRD-FHIR-Proxy"
-        "client_id": os.getenv("EPIC_CLIENT_ID"),
+    "EPIC": {  # UChicago "https://interconapps.uchospitals.edu/PRD-FHIR-Proxy"
+        "client_id": _settings.epic_client_id,
+        "client_secret": _settings.epic_client_secret,
         "authorize_url": "/oauth2/authorize",
         "token_url": "/oauth2/token",
-        "redirect_uri": FRONTEND_HOSTNAME + "/auth/callback",
-        "scopes": "launch/patient patient/*.read openid profile offline_access"
+        "redirect_uri": _redirect_uri,
+        "scopes": "launch/patient patient/*.read openid profile offline_access",
     },
-    "EPIC_SANDBOX" : {  # "https://fhir.epic.com/interconnect-fhir-oauth"
-        "client_id": EPIC_SANDBOX_CLIENT_ID,
-        "client_secret" : EPIC_SANDBOX_CLIENT_SECRET,
+    "EPIC_SANDBOX": {  # "https://fhir.epic.com/interconnect-fhir-oauth"
+        "client_id": _settings.epic_sandbox_client_id,
+        "client_secret": _settings.epic_sandbox_client_secret,
         "authorize_url": "/oauth2/authorize",
         "token_url": "/oauth2/token",
         "fhir_server_url": "/api/FHIR/R4",
-        "redirect_uri": FRONTEND_HOSTNAME + "/auth/callback",
-        "scopes": "launch/patient patient/*.read openid profile offline_access"
-    }
+        "redirect_uri": _redirect_uri,
+        "scopes": "launch/patient patient/*.read openid profile offline_access",
+    },
 }
-# scope = "patient/Binary.read patient/DocumentReference.read patient/Medication.read patient/MedicationRequest.read patient/Observation.read patient/Patient.read launch/patient offline_access openid profile"
 
 
 

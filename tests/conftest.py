@@ -15,6 +15,9 @@ from cryptography.fernet import Fernet
 os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
+os.environ["EPIC_SANDBOX_CLIENT_ID"] = "test-sandbox-client-id"
+os.environ["EPIC_SANDBOX_CLIENT_SECRET"] = "test-sandbox-client-secret"
+os.environ["FRONTEND_HOSTNAME"] = "http://localhost:3000"
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
