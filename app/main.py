@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import engine, get_session, delete_expired_states, persist_token
 from app.auth.models import OAuthState, ProviderToken
-from app.providers.models import TokenSet
+from app.providers.discovery import SMARTDiscovery, SMARTDiscoveryError
+from app.providers.generic import GenericSMARTProvider, TokenExchangeError
 from app.core.config import get_settings
 
 
@@ -46,7 +47,27 @@ class CallbackData(BaseModel):
     state: str
 
 
-# http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth
+# A single discovery cache shared across requests: re-authorizing the same
+# issuer reuses its SMART configuration instead of re-fetching it each time.
+_discovery = SMARTDiscovery()
+
+
+def _provider_for(ehr: dict, iss: str) -> GenericSMARTProvider:
+    """Build the discovery-driven provider for one provider/issuer connection.
+
+    The token is bound to the issuer the app intends to call, so aud is the
+    issuer — never a hardcoded server.
+    """
+    return GenericSMARTProvider(
+        client_id=ehr["client_id"],
+        client_secret=ehr.get("client_secret"),
+        redirect_uri=ehr["redirect_uri"],
+        aud=iss.rstrip("/"),
+        discovery=_discovery,
+    )
+
+
+# http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4
 @app.get("/auth/start")
 async def start_auth(
     provider: str, iss: str, session: AsyncSession = Depends(get_session)
@@ -55,25 +76,31 @@ async def start_auth(
     if not ehr:
         return JSONResponse({"error": "Unknown or unsupported issuer (iss)"}, status_code=400)
 
+    provider_adapter = _provider_for(ehr, iss)
+    try:
+        smart_config = await provider_adapter.discover(iss)
+    except SMARTDiscoveryError:
+        return JSONResponse(
+            {"error": "Could not read the server's SMART configuration"}, status_code=502
+        )
+
     # Opportunistic sweep so expired anti-CSRF state does not accumulate.
     await delete_expired_states(session)
 
     state = secrets.token_urlsafe(16)
+    auth = provider_adapter.build_auth_url(smart_config, state, ehr["scopes"].split())
     session.add(
-        OAuthState.issue(state, iss, provider, get_settings().oauth_state_ttl_seconds)
+        OAuthState.issue(
+            state,
+            iss,
+            provider,
+            get_settings().oauth_state_ttl_seconds,
+            code_verifier=auth.code_verifier,
+        )
     )
     await session.commit()
 
-    auth_url = (
-        f"{iss}{ehr['authorize_url']}?"
-        f"response_type=code&"
-        f"client_id={ehr['client_id']}&"
-        f"redirect_uri={ehr['redirect_uri']}&"
-        f"scope={ehr['scopes']}&"
-        f"state={state}&"
-        f"aud=https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
-    )
-    return RedirectResponse(auth_url)
+    return RedirectResponse(auth.url)
 
 
 @app.post("/auth/callback")
@@ -90,6 +117,7 @@ async def handle_callback(
 
     iss = state_row.iss
     provider = state_row.provider
+    code_verifier = state_row.code_verifier
     ehr = config.EHR_CONFIGS.get(provider)
     if ehr is None:
         raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
@@ -98,54 +126,39 @@ async def handle_callback(
     await session.delete(state_row)
     await session.commit()
 
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": ehr["redirect_uri"],
-    }
-
+    provider_adapter = _provider_for(ehr, iss)
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                iss + ehr["token_url"],
-                data=data,
-                auth=(ehr["client_id"], ehr["client_secret"]),
-            )
+        smart_config = await provider_adapter.discover(iss)
+        token_set = await provider_adapter.exchange_token(
+            smart_config, code, code_verifier=code_verifier
+        )
+    except SMARTDiscoveryError:
+        raise HTTPException(
+            status_code=502, detail="Could not read the server's SMART configuration"
+        )
+    except TokenExchangeError:
+        # The provider rejected the exchange — a bad code, expired grant, etc.
+        raise HTTPException(status_code=400, detail="Token exchange failed")
     except httpx.HTTPError:
-        # Timeout or network failure reaching the provider — an upstream
-        # problem, not a bad request from our caller.
+        # Timeout or network failure reaching the provider — an upstream problem.
         raise HTTPException(status_code=502, detail="Token exchange failed")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Token exchange failed")
-
-    try:
-        token_response = response.json()
-    except ValueError:
-        # A 200 with a non-JSON body (e.g. an HTML error page from a gateway).
-        raise HTTPException(status_code=502, detail="Token exchange failed")
-
-    if "access_token" not in token_response:
-        raise HTTPException(status_code=400, detail="Token exchange failed")
-
-    # TokenSet drops vendor-specific keys (e.g. __epic.dstu2.patient) before storage.
-    token_set = TokenSet.model_validate(token_response)
     await persist_token(session, provider=provider, iss=iss, token_set=token_set)
 
-    return JSONResponse(content={"success": True}, status_code=200)
+    return JSONResponse(
+        content={"success": True, "patient": token_set.patient}, status_code=200
+    )
 
 
 @app.get("/fhir_resources")
 async def get_all_resource(
-    access_token: str,
     fhir_patient_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    if not access_token or not fhir_patient_id:
+    if not fhir_patient_id:
         return JSONResponse({"error": "Missing or unsupported parameters"}, status_code=400)
 
-    # The OAuth state was consumed at the callback, so the patient's stored
-    # token row is what knows which provider/issuer this patient belongs to.
+    # The patient's stored token row knows which provider/issuer they belong to.
     # Most recently updated connection wins if the patient has several.
     token_row = (
         await session.execute(
@@ -157,12 +170,11 @@ async def get_all_resource(
     if token_row is None:
         return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
 
-    ehr = config.EHR_CONFIGS.get(token_row.provider)
-    if ehr is None:
-        return JSONResponse({"error": "Unknown or unsupported provider"}, status_code=400)
-
+    # The issuer is the FHIR base URL, so it is also the base for resource calls.
+    # The access token is read from storage (decrypted by the ORM) rather than
+    # taken from the URL, so a bearer token never travels as a query parameter.
     resources = await service.fetch_fhir_resources(
-        access_token, token_row.iss + ehr["fhir_server_url"], fhir_patient_id
+        token_row.access_token, token_row.iss, fhir_patient_id
     )
     return JSONResponse(resources)
 

@@ -1,9 +1,10 @@
-"""Persistence flow: state is written at /auth/start, consumed at /auth/callback,
-and the exchanged token is stored encrypted.
+"""Auth flow end to end: discover, authorize, exchange, persist, then fetch.
 
-Drives the live endpoints end-to-end against an on-disk SQLite database with the
-SMART token endpoint mocked, then reopens the database with a fresh engine to show
-that the token survives a restart and the single-use state was consumed.
+Drives the live endpoints against an on-disk SQLite database with the server's
+SMART discovery document and token endpoint mocked. Shows the redirect is built
+from discovery (aud derived from the issuer, PKCE attached), the exchange uses
+the auth method the server advertises, the token is stored encrypted, and FHIR
+resources are then fetched with that stored token — never one passed in the URL.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import pytest
 import respx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -22,8 +24,20 @@ from app.core.db import get_session, persist_token
 from app.auth.models import Base, OAuthState, ProviderToken, utcnow
 from app.providers.models import TokenSet
 
-ISS = "https://fhir.epic.com/interconnect-fhir-oauth"
-TOKEN_URL = ISS + "/oauth2/token"
+# The issuer is the FHIR base URL; discovery, aud, and resource calls all use it.
+ISS = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+WELL_KNOWN_URL = ISS + "/.well-known/smart-configuration"
+# Endpoints the discovery document advertises (absolute, at the OAuth base).
+AUTHORIZE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize"
+TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
+
+
+@pytest.fixture(autouse=True)
+def _reset_discovery_cache():
+    """Keep the shared discovery cache from leaking configs between tests."""
+    main._discovery.clear()
+    yield
+    main._discovery.clear()
 
 
 @asynccontextmanager
@@ -64,26 +78,53 @@ async def _start(client) -> str:
 
 @respx.mock
 async def test_auth_flow_persists_state_then_consumes_it_and_stores_token(
-    tmp_path, epic_token_response
+    tmp_path, epic_smart_config, epic_token_response
 ):
     url = f"sqlite+aiosqlite:///{tmp_path / 'flow.db'}"
-    respx.post(TOKEN_URL).mock(
+    respx.get(WELL_KNOWN_URL).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
+    token_route = respx.post(TOKEN_URL).mock(
         return_value=httpx.Response(200, json=epic_token_response)
     )
 
     async with _app_db(url) as factory:
         async with _client() as client:
-            state = await _start(client)
+            response = await client.get(
+                "/auth/start",
+                params={"provider": "EPIC_SANDBOX", "iss": ISS},
+                follow_redirects=False,
+            )
+            assert response.status_code == 307
+            location = response.headers["location"]
+            query = parse_qs(urlparse(location).query)
+            state = query["state"][0]
 
-            # State lives in the database, not an in-memory dict, so it outlives a restart.
+            # The redirect is built from discovery: rooted at the discovered
+            # endpoint, aud derived from the issuer, PKCE attached.
+            assert location.startswith(AUTHORIZE_URL)
+            assert query["aud"] == [ISS]
+            assert "code_challenge" in query
+
+            # State lives in the database with its PKCE verifier, outliving a restart.
             async with factory() as session:
-                assert await session.get(OAuthState, state) is not None
+                row = await session.get(OAuthState, state)
+                assert row is not None
+                assert row.code_verifier is not None
 
             callback = await client.post(
                 "/auth/callback", json={"code": "auth-code-123", "state": state}
             )
             assert callback.status_code == 200
-            assert callback.json() == {"success": True}
+            assert callback.json() == {
+                "success": True,
+                "patient": epic_token_response["patient"],
+            }
+
+    # The exchange used Basic auth (chosen from discovery) and replayed the verifier.
+    exchange = token_route.calls.last.request
+    assert exchange.headers["Authorization"].startswith("Basic ")
+    assert "code_verifier" in parse_qs(exchange.content.decode())
 
     # Reopen with a fresh engine: the consumed state is gone, the token persisted.
     engine = create_async_engine(url)
@@ -114,6 +155,7 @@ async def test_callback_rejects_expired_state(tmp_path):
             await session.commit()
 
         async with _client() as client:
+            # Rejected on the state check, before any discovery or exchange.
             response = await client.post(
                 "/auth/callback", json={"code": "code", "state": "expired"}
             )
@@ -124,8 +166,13 @@ async def test_callback_rejects_expired_state(tmp_path):
 
 
 @respx.mock
-async def test_callback_with_failed_exchange_consumes_state_and_stores_no_token(tmp_path):
+async def test_callback_with_failed_exchange_consumes_state_and_stores_no_token(
+    tmp_path, epic_smart_config
+):
     url = f"sqlite+aiosqlite:///{tmp_path / 'fail.db'}"
+    respx.get(WELL_KNOWN_URL).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
     respx.post(TOKEN_URL).mock(
         return_value=httpx.Response(400, json={"error": "invalid_grant"})
     )
@@ -144,15 +191,19 @@ async def test_callback_with_failed_exchange_consumes_state_and_stores_no_token(
 
 
 @respx.mock
-async def test_resources_can_be_fetched_after_the_callback(tmp_path, epic_token_response):
+async def test_resources_are_fetched_with_the_stored_token(
+    tmp_path, epic_smart_config, epic_token_response
+):
     url = f"sqlite+aiosqlite:///{tmp_path / 'resources.db'}"
+    respx.get(WELL_KNOWN_URL).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
     respx.post(TOKEN_URL).mock(
         return_value=httpx.Response(200, json=epic_token_response)
     )
-    # Catch-all for the fan-out across resource types on the FHIR base URL.
-    fhir_route = respx.route(
-        method="GET", url__startswith=ISS + "/api/FHIR/R4/"
-    ).mock(
+    # Catch-all for the fan-out across resource types on the FHIR base URL. The
+    # well-known route is registered first, so it still wins for that path.
+    fhir_route = respx.route(method="GET", url__startswith=ISS + "/").mock(
         return_value=httpx.Response(200, json={"resourceType": "Bundle", "entry": []})
     )
 
@@ -163,20 +214,22 @@ async def test_resources_can_be_fetched_after_the_callback(tmp_path, epic_token_
                 "/auth/callback", json={"code": "auth-code-123", "state": state}
             )
 
-            # The state is consumed by now; the stored token row is what routes
-            # the patient to their provider.
+            # No access_token in the request: the stored token routes the patient.
             response = await client.get(
                 "/fhir_resources",
-                params={
-                    "access_token": epic_token_response["access_token"],
-                    "fhir_patient_id": epic_token_response["patient"],
-                },
+                params={"fhir_patient_id": epic_token_response["patient"]},
             )
 
     assert response.status_code == 200
     assert fhir_route.called
-    body = response.json()
-    assert body["Patient"] == {"resourceType": "Bundle", "entry": []}
+    # The FHIR call carries the stored token as a Bearer header, not in the URL.
+    fhir_request = fhir_route.calls.last.request
+    assert (
+        fhir_request.headers["Authorization"]
+        == f"Bearer {epic_token_response['access_token']}"
+    )
+    assert epic_token_response["access_token"] not in str(fhir_request.url)
+    assert response.json()["Patient"] == {"resourceType": "Bundle", "entry": []}
 
 
 async def test_resources_unknown_patient_returns_404(tmp_path):
@@ -185,8 +238,7 @@ async def test_resources_unknown_patient_returns_404(tmp_path):
     async with _app_db(url):
         async with _client() as client:
             response = await client.get(
-                "/fhir_resources",
-                params={"access_token": "tok", "fhir_patient_id": "nobody"},
+                "/fhir_resources", params={"fhir_patient_id": "nobody"}
             )
 
     assert response.status_code == 404

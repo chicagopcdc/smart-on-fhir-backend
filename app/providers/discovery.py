@@ -45,6 +45,10 @@ class SMARTDiscovery:
         self._timeout = timeout
         self._cache: dict[str, tuple[float, SMARTConfiguration]] = {}
 
+    def clear(self) -> None:
+        """Drop every cached configuration, forcing the next fetch to re-discover."""
+        self._cache.clear()
+
     async def fetch(self, iss: str) -> SMARTConfiguration:
         """Return the parsed SMART configuration for ``iss``."""
         # Normalize so a trailing slash neither splits the cache nor doubles up.

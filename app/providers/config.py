@@ -10,17 +10,12 @@ EHR_CONFIGS = {
     "EPIC": {  # UChicago "https://interconapps.uchospitals.edu/PRD-FHIR-Proxy"
         "client_id": _settings.epic_client_id,
         "client_secret": _settings.epic_client_secret,
-        "authorize_url": "/oauth2/authorize",
-        "token_url": "/oauth2/token",
         "redirect_uri": _redirect_uri,
         "scopes": "launch/patient patient/*.read openid profile offline_access",
     },
-    "EPIC_SANDBOX": {  # "https://fhir.epic.com/interconnect-fhir-oauth"
+    "EPIC_SANDBOX": {  # iss: "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
         "client_id": _settings.epic_sandbox_client_id,
         "client_secret": _settings.epic_sandbox_client_secret,
-        "authorize_url": "/oauth2/authorize",
-        "token_url": "/oauth2/token",
-        "fhir_server_url": "/api/FHIR/R4",
         "redirect_uri": _redirect_uri,
         "scopes": "launch/patient patient/*.read openid profile offline_access",
     },
