@@ -26,7 +26,11 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.auth.models import Base  # noqa: E402
 from app.providers.base import FHIRProvider  # noqa: E402
-from app.providers.models import SMARTConfiguration, TokenSet  # noqa: E402
+from app.providers.models import (  # noqa: E402
+    AuthorizationRequest,
+    SMARTConfiguration,
+    TokenSet,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -38,10 +42,10 @@ def _load_json(name: str) -> dict:
 class StubProvider(FHIRProvider):
     """Concrete provider that implements just enough to drive discover()."""
 
-    def build_auth_url(self, config, state, scopes) -> str:
-        return f"{config.authorization_endpoint}?state={state}"
+    def build_auth_url(self, config, state, scopes) -> AuthorizationRequest:
+        return AuthorizationRequest(url=f"{config.authorization_endpoint}?state={state}")
 
-    async def exchange_token(self, config, code) -> TokenSet:
+    async def exchange_token(self, config, code, code_verifier=None) -> TokenSet:
         raise NotImplementedError
 
     async def refresh_token(self, config, refresh_token) -> TokenSet:

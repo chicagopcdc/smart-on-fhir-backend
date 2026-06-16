@@ -46,9 +46,9 @@ async def test_discovering_epic_yields_inputs_for_authorization(
     assert "client_secret_basic" in config.token_endpoint_auth_methods_supported
 
     # The auth URL is rooted at the discovered endpoint, not a hardcoded one.
-    auth_url = provider.build_auth_url(config, state="abc123", scopes=["openid"])
-    assert auth_url.startswith(str(config.authorization_endpoint))
-    assert "state=abc123" in auth_url
+    auth = provider.build_auth_url(config, state="abc123", scopes=["openid"])
+    assert auth.url.startswith(str(config.authorization_endpoint))
+    assert "state=abc123" in auth.url
 
 
 @respx.mock

@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from app.providers.discovery import SMARTDiscovery
-from app.providers.models import SMARTConfiguration, TokenSet
+from app.providers.models import AuthorizationRequest, SMARTConfiguration, TokenSet
 
 
 class FHIRProvider(ABC):
@@ -30,12 +30,22 @@ class FHIRProvider(ABC):
         config: SMARTConfiguration,
         state: str,
         scopes: list[str],
-    ) -> str:
-        """Build the authorization URL to redirect the user to."""
+    ) -> AuthorizationRequest:
+        """Build the authorization redirect, plus any PKCE verifier to retain.
+
+        Returns an :class:`AuthorizationRequest` rather than a bare URL so the
+        caller can persist the PKCE ``code_verifier`` alongside the OAuth state
+        and replay it at the token exchange.
+        """
         ...
 
     @abstractmethod
-    async def exchange_token(self, config: SMARTConfiguration, code: str) -> TokenSet:
+    async def exchange_token(
+        self,
+        config: SMARTConfiguration,
+        code: str,
+        code_verifier: str | None = None,
+    ) -> TokenSet:
         """Exchange an authorization code for tokens."""
         ...
 

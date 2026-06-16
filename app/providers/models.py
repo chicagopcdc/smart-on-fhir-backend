@@ -9,6 +9,8 @@ https://hl7.org/fhir/smart-app-launch/conformance.html
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
@@ -63,3 +65,17 @@ class TokenSet(BaseModel):
     refresh_token: str | None = None
     id_token: str | None = None
     patient: str | None = None  # FHIR id of the authorized patient
+
+
+@dataclass(frozen=True)
+class AuthorizationRequest:
+    """The result of building an authorization redirect.
+
+    ``code_verifier`` is the PKCE secret minted alongside the URL when the
+    server advertises PKCE; it is ``None`` otherwise. It must be carried to the
+    token exchange but never sent to the browser, so it is stored server-side
+    with the OAuth ``state``.
+    """
+
+    url: str
+    code_verifier: str | None = None
