@@ -139,6 +139,26 @@ async def test_auth_flow_persists_state_then_consumes_it_and_stores_token(
     await engine.dispose()
 
 
+@respx.mock
+async def test_start_rejects_issuer_not_allowed_for_provider(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'badiss.db'}"
+
+    async with _app_db(url) as factory:
+        async with _client() as client:
+            # An issuer the provider was never registered with: rejected before
+            # any discovery request, so no outbound call is made (respx would
+            # raise on one) and no state is written.
+            response = await client.get(
+                "/auth/start",
+                params={"provider": "EPIC_SANDBOX", "iss": "https://evil.example/fhir"},
+                follow_redirects=False,
+            )
+            assert response.status_code == 400
+
+        async with factory() as session:
+            assert (await session.execute(select(OAuthState))).first() is None
+
+
 async def test_callback_rejects_expired_state(tmp_path):
     url = f"sqlite+aiosqlite:///{tmp_path / 'expired.db'}"
 

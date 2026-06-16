@@ -15,7 +15,11 @@ import httpx
 import pytest
 import respx
 
-from app.providers.generic import GenericSMARTProvider, TokenExchangeError
+from app.providers.generic import (
+    GenericSMARTProvider,
+    SMARTProviderError,
+    TokenExchangeError,
+)
 from app.providers.models import SMARTConfiguration
 
 EPIC_ISS = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
@@ -177,6 +181,19 @@ async def test_refresh_token_posts_refresh_grant(epic_smart_config, epic_token_r
 
 
 # Failure paths surface a typed error, not a raw HTTP/validation exception.
+
+
+async def test_exchange_refuses_basic_when_server_advertises_no_supported_method(
+    epic_smart_config,
+):
+    # A confidential client facing a server that offers only asymmetric auth:
+    # we must not blindly send Basic to a server that will reject it.
+    config = _config(
+        epic_smart_config, token_endpoint_auth_methods_supported=["private_key_jwt"]
+    )
+
+    with pytest.raises(SMARTProviderError):
+        await _provider().exchange_token(config, code="auth-code")
 
 
 @respx.mock

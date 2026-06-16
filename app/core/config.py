@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     epic_client_id: str | None = None
     epic_client_secret: str | None = None
 
+    # The FHIR base URL (issuer) of the production Epic deployment, used to
+    # allowlist the issuer a caller may start an authorization against. Unset
+    # leaves that provider with no allowed issuer, so it rejects every request.
+    epic_issuer: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

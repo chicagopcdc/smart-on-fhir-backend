@@ -152,14 +152,21 @@ class GenericSMARTProvider(FHIRProvider):
 
         if self.client_secret is not None:
             # Confidential client. Prefer Basic — SMART's recommended default —
-            # and only post credentials in the body when that is all that is on
-            # offer. With nothing advertised, Basic is the safe assumption.
-            if "client_secret_post" in methods and "client_secret_basic" not in methods:
+            # then form-post. With nothing advertised, Basic is the safe
+            # assumption. But if the server advertises methods and none is a
+            # symmetric-secret one (e.g. only private_key_jwt), do not blindly
+            # send Basic to a server that will reject it.
+            if "client_secret_basic" in methods or not methods:
+                return (self.client_id, self.client_secret), {}
+            if "client_secret_post" in methods:
                 return None, {
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
                 }
-            return (self.client_id, self.client_secret), {}
+            raise SMARTProviderError(
+                "token endpoint advertises no client-secret authentication "
+                f"method this provider supports: {methods}"
+            )
 
         # Public client: no secret to present. The client_id identifies the app
         # and PKCE proves possession of the authorization request.

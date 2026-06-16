@@ -22,7 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import engine, get_session, delete_expired_states, persist_token
 from app.auth.models import OAuthState, ProviderToken
 from app.providers.discovery import SMARTDiscovery, SMARTDiscoveryError
-from app.providers.generic import GenericSMARTProvider, TokenExchangeError
+from app.providers.generic import (
+    GenericSMARTProvider,
+    SMARTProviderError,
+    TokenExchangeError,
+)
 from app.core.config import get_settings
 
 
@@ -74,7 +78,16 @@ async def start_auth(
 ):
     ehr = config.EHR_CONFIGS.get(provider)
     if not ehr:
-        return JSONResponse({"error": "Unknown or unsupported issuer (iss)"}, status_code=400)
+        return JSONResponse({"error": "Unknown or unsupported provider"}, status_code=400)
+
+    # Only authorize against an issuer this provider was registered with. This
+    # runs before any discovery request, so a caller cannot point us at an
+    # arbitrary server to probe it (SSRF) or to receive our client secret.
+    allowed_issuers = {a.rstrip("/") for a in ehr.get("allowed_issuers", [])}
+    if iss.rstrip("/") not in allowed_issuers:
+        return JSONResponse(
+            {"error": "Issuer not allowed for this provider"}, status_code=400
+        )
 
     provider_adapter = _provider_for(ehr, iss)
     try:
@@ -139,6 +152,9 @@ async def handle_callback(
     except TokenExchangeError:
         # The provider rejected the exchange — a bad code, expired grant, etc.
         raise HTTPException(status_code=400, detail="Token exchange failed")
+    except SMARTProviderError:
+        # The server requires a client authentication method we do not support.
+        raise HTTPException(status_code=502, detail="Unsupported provider configuration")
     except httpx.HTTPError:
         # Timeout or network failure reaching the provider — an upstream problem.
         raise HTTPException(status_code=502, detail="Token exchange failed")

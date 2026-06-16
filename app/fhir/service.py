@@ -83,14 +83,9 @@ async def fetch_fhir_resources(access_token, base_url, fhir_patient_id):
         responses = await asyncio.gather(*tasks)
 
         for resource, response in zip(resource_types, responses):
-            print(f"--- {resource} ---")
-            print(f"Status: {response['status_code']}")
-            print(f"Error: {response['error']}\n")
-
             if response["success"]:
                 resources[resource] = response["data"]
             else:
-                # resources[resource] = None
                 resources[resource] = {
                     "error": response["error"],
                     "status_code": response["status_code"]

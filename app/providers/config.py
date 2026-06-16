@@ -6,18 +6,27 @@ _redirect_uri = _settings.frontend_hostname.rstrip("/") + "/auth/callback"
 # Per-provider registration data that a SMART server does NOT advertise:
 # the client credentials, where the EHR redirects back to, and the scopes we
 # request. Endpoints and capabilities are discovered at runtime instead.
+#
+# "allowed_issuers" pins which FHIR base URLs a caller may start an
+# authorization against. A confidential client must never send its secret to an
+# issuer it did not register with, so the supplied iss is checked against this
+# allowlist before any discovery request is made.
 EHR_CONFIGS = {
-    "EPIC": {  # UChicago "https://interconapps.uchospitals.edu/PRD-FHIR-Proxy"
+    "EPIC": {
         "client_id": _settings.epic_client_id,
         "client_secret": _settings.epic_client_secret,
         "redirect_uri": _redirect_uri,
         "scopes": "launch/patient patient/*.read openid profile offline_access",
+        "allowed_issuers": [_settings.epic_issuer] if _settings.epic_issuer else [],
     },
-    "EPIC_SANDBOX": {  # iss: "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+    "EPIC_SANDBOX": {
         "client_id": _settings.epic_sandbox_client_id,
         "client_secret": _settings.epic_sandbox_client_secret,
         "redirect_uri": _redirect_uri,
         "scopes": "launch/patient patient/*.read openid profile offline_access",
+        "allowed_issuers": [
+            "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+        ],
     },
 }
 
