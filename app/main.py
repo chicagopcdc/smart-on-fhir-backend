@@ -80,11 +80,15 @@ async def start_auth(
     if not ehr:
         return JSONResponse({"error": "Unknown or unsupported provider"}, status_code=400)
 
+    # Canonicalize once so the allowlist check, the persisted state, and the
+    # derived aud all agree on the same issuer string.
+    iss = iss.rstrip("/")
+
     # Only authorize against an issuer this provider was registered with. This
     # runs before any discovery request, so a caller cannot point us at an
     # arbitrary server to probe it (SSRF) or to receive our client secret.
     allowed_issuers = {a.rstrip("/") for a in ehr.get("allowed_issuers", [])}
-    if iss.rstrip("/") not in allowed_issuers:
+    if iss not in allowed_issuers:
         return JSONResponse(
             {"error": "Issuer not allowed for this provider"}, status_code=400
         )
@@ -128,6 +132,8 @@ async def handle_callback(
     if state_row is None or state_row.is_expired:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
+    # The issuer was validated against the provider's allowlist at /auth/start
+    # and is the only one stored on the state row, so it is trusted here.
     iss = state_row.iss
     provider = state_row.provider
     code_verifier = state_row.code_verifier

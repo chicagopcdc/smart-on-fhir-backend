@@ -3,6 +3,8 @@ from app.core.config import get_settings
 _settings = get_settings()
 _redirect_uri = _settings.frontend_hostname.rstrip("/") + "/auth/callback"
 
+_DEFAULT_SCOPES = "launch/patient patient/*.read openid profile offline_access"
+
 # Per-provider registration data that a SMART server does NOT advertise:
 # the client credentials, where the EHR redirects back to, and the scopes we
 # request. Endpoints and capabilities are discovered at runtime instead.
@@ -16,14 +18,14 @@ EHR_CONFIGS = {
         "client_id": _settings.epic_client_id,
         "client_secret": _settings.epic_client_secret,
         "redirect_uri": _redirect_uri,
-        "scopes": "launch/patient patient/*.read openid profile offline_access",
+        "scopes": _DEFAULT_SCOPES,
         "allowed_issuers": [_settings.epic_issuer] if _settings.epic_issuer else [],
     },
     "EPIC_SANDBOX": {
         "client_id": _settings.epic_sandbox_client_id,
         "client_secret": _settings.epic_sandbox_client_secret,
         "redirect_uri": _redirect_uri,
-        "scopes": "launch/patient patient/*.read openid profile offline_access",
+        "scopes": _DEFAULT_SCOPES,
         "allowed_issuers": [
             "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
         ],
