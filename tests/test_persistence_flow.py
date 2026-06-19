@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app import main
 from app.core.db import get_session, persist_token
 from app.auth.models import Base, OAuthState, ProviderToken, utcnow
+from app.providers import config
 from app.providers.models import TokenSet
 
 # The issuer is the FHIR base URL; discovery, aud, and resource calls all use it.
@@ -154,6 +155,27 @@ async def test_start_rejects_issuer_not_allowed_for_provider(tmp_path):
                 follow_redirects=False,
             )
             assert response.status_code == 400
+
+        async with factory() as session:
+            assert (await session.execute(select(OAuthState))).first() is None
+
+
+@respx.mock
+async def test_start_on_unconfigured_provider_returns_503(tmp_path, monkeypatch):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'unconfigured.db'}"
+    # Simulate a deployment that never set the provider's client_id: we should
+    # fail clearly rather than redirect the user to the EHR with an empty one.
+    ehr = dict(config.EHR_CONFIGS["EPIC_SANDBOX"], client_id=None)
+    monkeypatch.setitem(config.EHR_CONFIGS, "EPIC_SANDBOX", ehr)
+
+    async with _app_db(url) as factory:
+        async with _client() as client:
+            response = await client.get(
+                "/auth/start",
+                params={"provider": "EPIC_SANDBOX", "iss": ISS},
+                follow_redirects=False,
+            )
+            assert response.status_code == 503
 
         async with factory() as session:
             assert (await session.execute(select(OAuthState))).first() is None

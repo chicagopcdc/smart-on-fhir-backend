@@ -65,7 +65,9 @@ class GenericSMARTProvider(FHIRProvider):
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
-        self.aud = aud
+        # aud must equal the FHIR base URL; normalize so a trailing slash never
+        # produces an aud the authorization server fails to match.
+        self.aud = aud.rstrip("/")
         self._timeout = timeout
 
     def build_auth_url(

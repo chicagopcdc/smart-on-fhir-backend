@@ -80,6 +80,12 @@ async def start_auth(
     if not ehr:
         return JSONResponse({"error": "Unknown or unsupported provider"}, status_code=400)
 
+    # A provider with no configured client_id is a deployment that did not set
+    # its credentials; fail clearly here rather than redirect the user to the
+    # EHR with an empty client_id and let them hit an opaque invalid_client.
+    if not ehr.get("client_id"):
+        return JSONResponse({"error": "Provider is not configured"}, status_code=503)
+
     # Canonicalize once so the allowlist check, the persisted state, and the
     # derived aud all agree on the same issuer string.
     iss = iss.rstrip("/")
