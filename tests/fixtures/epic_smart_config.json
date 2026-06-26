@@ -1,0 +1,46 @@
+{
+  "authorization_endpoint": "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize",
+  "token_endpoint": "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token",
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_post",
+    "client_secret_basic",
+    "private_key_jwt"
+  ],
+  "scopes_supported": [
+    "epic.scanning.dmsusername",
+    "fhirUser",
+    "launch",
+    "openid",
+    "profile"
+  ],
+  "response_types_supported": ["code"],
+  "capabilities": [
+    "launch-ehr",
+    "launch-standalone",
+    "client-public",
+    "client-confidential-symmetric",
+    "client-confidential-asymmetric",
+    "context-banner",
+    "context-style",
+    "context-ehr-patient",
+    "context-ehr-encounter",
+    "context-standalone-patient",
+    "permission-offline",
+    "permission-patient",
+    "permission-user",
+    "permission-v1",
+    "permission-v2",
+    "sso-openid-connect",
+    "authorize-post"
+  ],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "client_credentials",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "urn:ietf:params:oauth:grant-type:token-exchange"
+  ],
+  "code_challenge_methods_supported": ["S256"],
+  "issuer": "https://fhir.epic.com/interconnect-fhir-oauth/oauth2",
+  "jwks_uri": "https://fhir.epic.com/interconnect-fhir-oauth/api/epic/2019/Security/Open/PublicKeys/530027/OIDC"
+}

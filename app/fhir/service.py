@@ -1,6 +1,6 @@
 import httpx
 import asyncio
-import config
+from app.providers import config
 
 
 

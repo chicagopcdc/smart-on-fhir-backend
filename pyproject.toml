@@ -11,7 +11,34 @@ fastapi = "^0.111.0"
 uvicorn = { extras = ["standard"], version = "^0.29.0" }
 authlib = "^1.3.0"
 python-dotenv = "^1.0.1"
+httpx = "^0.28.1"
+pydantic = "^2.11"
+sqlalchemy = {version = ">=2.0", extras = ["asyncio"]}
+asyncpg = "^0.31.0"
+alembic = "^1.18.4"
+cryptography = "^48.0.0"
+pydantic-settings = "^2.14.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-asyncio (>=1.4.0,<2.0.0)",
+    "respx (>=0.23.1,<0.24.0)",
+    "aiosqlite (>=0.22.1,<0.23.0)"
+]
+
+[tool.pytest.ini_options]
+# Treat `async def test_*` as asyncio tests automatically.
+asyncio_mode = "auto"
+# Pin the fixture loop scope (pytest-asyncio 1.x warns when it is unset).
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# Offline by default; the `live` suite is opt-in via `pytest -m live`.
+addopts = "-m 'not live'"
+markers = [
+    "live: hits real external SMART servers over the network; opt-in via `pytest -m live`",
+]
