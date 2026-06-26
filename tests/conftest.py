@@ -15,6 +15,9 @@ from cryptography.fernet import Fernet
 os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
+os.environ["EPIC_SANDBOX_CLIENT_ID"] = "test-sandbox-client-id"
+os.environ["EPIC_SANDBOX_CLIENT_SECRET"] = "test-sandbox-client-secret"
+os.environ["FRONTEND_HOSTNAME"] = "http://localhost:3000"
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -23,7 +26,11 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.auth.models import Base  # noqa: E402
 from app.providers.base import FHIRProvider  # noqa: E402
-from app.providers.models import SMARTConfiguration, TokenSet  # noqa: E402
+from app.providers.models import (  # noqa: E402
+    AuthorizationRequest,
+    SMARTConfiguration,
+    TokenSet,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -35,10 +42,10 @@ def _load_json(name: str) -> dict:
 class StubProvider(FHIRProvider):
     """Concrete provider that implements just enough to drive discover()."""
 
-    def build_auth_url(self, config, state, scopes) -> str:
-        return f"{config.authorization_endpoint}?state={state}"
+    def build_auth_url(self, config, state, scopes) -> AuthorizationRequest:
+        return AuthorizationRequest(url=f"{config.authorization_endpoint}?state={state}")
 
-    async def exchange_token(self, config, code) -> TokenSet:
+    async def exchange_token(self, config, code, code_verifier=None) -> TokenSet:
         raise NotImplementedError
 
     async def refresh_token(self, config, refresh_token) -> TokenSet:
