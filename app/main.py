@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import List
 from fastapi import  Query
 import csv, io
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -207,25 +208,63 @@ async def get_all_resource(
     return JSONResponse(resources)
 
 
-# URL to fetch the daily LANTERN CSV data
-LANTERN_CSV_URL = "https://lantern.healthit.gov/api/daily/download"
+# ONC's Lantern REST download API (lantern.healthit.gov/api/daily/download) started
+# returning 404 in mid-2026. Lantern publishes the same daily endpoint CSV to a
+# public GitHub repo, so we read the most recent file from there. Files are named
+# lantern-daily-data/<year>/<Month>/<MM_DD_YYYY>endpointdata.csv.
+LANTERN_MIRROR_BASE = (
+    "https://raw.githubusercontent.com/onc-healthit/onc-open-data/main/lantern-daily-data"
+)
+
+# How many days back to look for the newest published file. The mirror can lag a
+# day or two, so we search a window rather than assuming today's file exists.
+LANTERN_LOOKBACK_DAYS = 14
+
+# Full month names, indexed 1..12. The mirror path uses English month names, so we
+# build the segment explicitly rather than with strftime("%B"), which would follow
+# the process locale and break on a non-English one.
+_MONTHS = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
 
 # Maximum allowed number of rows per page in the response
 PAGE_SIZE_MAX = 1000
 
-# Cache the result of the function to avoid re-fetching the data on every request
+
+def _latest_lantern_csv_url() -> str:
+    """Return the URL of the newest endpoint CSV in the Lantern mirror.
+
+    Walks back from today and returns the first daily file that exists, so a
+    missing or not-yet-published day is skipped automatically. The result is
+    cached by load_dataset, so this fan-out of HEAD requests runs at most once per
+    process on the happy path (today's file exists -> a single HEAD). A short
+    per-request timeout bounds the worst case if GitHub is unreachable.
+    """
+    today = date.today()
+    with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+        for offset in range(LANTERN_LOOKBACK_DAYS):
+            day = today - timedelta(days=offset)
+            url = (
+                f"{LANTERN_MIRROR_BASE}/{day.year}/{_MONTHS[day.month]}/"
+                f"{day:%m_%d_%Y}endpointdata.csv"
+            )
+            if client.head(url).status_code == 200:
+                return url
+    raise RuntimeError(
+        f"No Lantern endpoint CSV found in the last {LANTERN_LOOKBACK_DAYS} days"
+    )
+
+
+# Cache the result so the ~30 MB file is downloaded and parsed once per process.
 @lru_cache(maxsize=1)
 def load_dataset() -> List[dict]:
-    # Create a synchronous HTTP client with a 30-second timeout
-    with httpx.Client(timeout=30.0) as client:
-        # Send a GET request to download the CSV data
-        r = client.get(LANTERN_CSV_URL)
-        # Raise an exception if the request failed (non-2xx status)
+    url = _latest_lantern_csv_url()
+    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+        r = client.get(url)
         r.raise_for_status()
-    
-    # Parse the CSV content into a list of dictionaries
+
     reader = csv.DictReader(io.StringIO(r.text))
-    # Return only rows that have a non-empty "url" field
     return [row for row in reader if row.get("url")]
 
 # Define an HTTP GET endpoint at path /lantern-endpoints
