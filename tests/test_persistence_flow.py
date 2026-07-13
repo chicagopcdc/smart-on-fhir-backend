@@ -9,21 +9,19 @@ resources are then fetched with that stored token — never one passed in the UR
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 import httpx
-import pytest
 import respx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import main
 from app.core.db import get_session, persist_token
-from app.auth.models import Base, OAuthState, ProviderToken, utcnow
+from app.auth.models import AppSession, OAuthState, ProviderToken, utcnow
 from app.providers import config
 from app.providers.models import TokenSet
+from tests.app_harness import app_db as _app_db, client as _client
 
 # The issuer is the FHIR base URL; discovery, aud, and resource calls all use it.
 ISS = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
@@ -31,40 +29,6 @@ WELL_KNOWN_URL = ISS + "/.well-known/smart-configuration"
 # Endpoints the discovery document advertises (absolute, at the OAuth base).
 AUTHORIZE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize"
 TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
-
-
-@pytest.fixture(autouse=True)
-def _reset_discovery_cache():
-    """Keep the shared discovery cache from leaking configs between tests."""
-    main._discovery.clear()
-    yield
-    main._discovery.clear()
-
-
-@asynccontextmanager
-async def _app_db(url: str):
-    """Bind the app to a throwaway database for the duration of a test."""
-    engine = create_async_engine(url)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def override_get_session():
-        async with factory() as session:
-            yield session
-
-    main.app.dependency_overrides[get_session] = override_get_session
-    try:
-        yield factory
-    finally:
-        main.app.dependency_overrides.clear()
-        await engine.dispose()
-
-
-def _client():
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
-    )
 
 
 async def _start(client) -> str:
@@ -75,6 +39,15 @@ async def _start(client) -> str:
     )
     assert response.status_code == 307
     return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
+
+
+async def _authorize(client) -> str:
+    """Run start + callback and return the issued app session bearer."""
+    state = await _start(client)
+    callback = await client.post(
+        "/auth/callback", json={"code": "auth-code-123", "state": state}
+    )
+    return callback.json()["session_id"]
 
 
 @respx.mock
@@ -117,10 +90,11 @@ async def test_auth_flow_persists_state_then_consumes_it_and_stores_token(
                 "/auth/callback", json={"code": "auth-code-123", "state": state}
             )
             assert callback.status_code == 200
-            assert callback.json() == {
-                "success": True,
-                "patient": epic_token_response["patient"],
-            }
+            body = callback.json()
+            assert body["success"] is True
+            assert body["patient"] == epic_token_response["patient"]
+            # A session bearer is returned for the frontend to read resources with.
+            assert body["session_id"]
 
     # The exchange used Basic auth (chosen from discovery) and replayed the verifier.
     exchange = token_route.calls.last.request
@@ -233,6 +207,32 @@ async def test_callback_with_failed_exchange_consumes_state_and_stores_no_token(
 
 
 @respx.mock
+async def test_callback_rejects_a_token_without_a_patient(tmp_path, epic_smart_config):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'nopatient_token.db'}"
+    respx.get(WELL_KNOWN_URL).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
+    # A token response with no patient context can't anchor a patient session;
+    # storing it under an empty id would let two such sessions collapse together.
+    respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "tok", "scope": "s"})
+    )
+
+    async with _app_db(url) as factory:
+        async with _client() as client:
+            state = await _start(client)
+            response = await client.post(
+                "/auth/callback", json={"code": "auth-code-123", "state": state}
+            )
+            assert response.status_code == 400
+
+        # Nothing is persisted: no token row and no session.
+        async with factory() as session:
+            assert (await session.execute(select(ProviderToken))).first() is None
+            assert (await session.execute(select(AppSession))).first() is None
+
+
+@respx.mock
 async def test_resources_are_fetched_with_the_stored_token(
     tmp_path, epic_smart_config, epic_token_response
 ):
@@ -251,15 +251,13 @@ async def test_resources_are_fetched_with_the_stored_token(
 
     async with _app_db(url):
         async with _client() as client:
-            state = await _start(client)
-            await client.post(
-                "/auth/callback", json={"code": "auth-code-123", "state": state}
-            )
+            session_id = await _authorize(client)
 
-            # No access_token in the request: the stored token routes the patient.
+            # The session — not a caller-supplied patient id — selects the patient
+            # and their stored token; no access_token is passed in the request.
             response = await client.get(
                 "/fhir_resources",
-                params={"fhir_patient_id": epic_token_response["patient"]},
+                headers={"Authorization": f"Bearer {session_id}"},
             )
 
     assert response.status_code == 200
@@ -274,16 +272,87 @@ async def test_resources_are_fetched_with_the_stored_token(
     assert response.json()["Patient"] == {"resourceType": "Bundle", "entry": []}
 
 
-async def test_resources_unknown_patient_returns_404(tmp_path):
-    url = f"sqlite+aiosqlite:///{tmp_path / 'nopatient.db'}"
+async def test_resources_without_a_session_are_refused(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'nosession.db'}"
 
     async with _app_db(url):
         async with _client() as client:
-            response = await client.get(
-                "/fhir_resources", params={"fhir_patient_id": "nobody"}
+            # No Authorization header: the caller cannot name a patient to read.
+            no_header = await client.get("/fhir_resources")
+            # A bearer that matches no session is equally rejected.
+            bad_bearer = await client.get(
+                "/fhir_resources", headers={"Authorization": "Bearer not-a-session"}
             )
 
-    assert response.status_code == 404
+    assert no_header.status_code == 401
+    assert bad_bearer.status_code == 401
+
+
+async def test_resources_reject_an_expired_session(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'expiredsession.db'}"
+
+    async with _app_db(url) as factory:
+        async with factory() as session:
+            session.add(
+                AppSession(
+                    session_id="expired-session",
+                    patient_fhir_id="p1",
+                    provider="EPIC_SANDBOX",
+                    iss=ISS,
+                    expires_at=utcnow() - timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+
+        async with _client() as client:
+            response = await client.get(
+                "/fhir_resources",
+                headers={"Authorization": "Bearer expired-session"},
+            )
+
+    assert response.status_code == 401
+
+
+@respx.mock
+async def test_a_session_reads_only_its_own_patient(tmp_path, epic_smart_config):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'crosstenant.db'}"
+    respx.get(WELL_KNOWN_URL).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
+    # Two authorizations against the same provider return two different patients,
+    # each with its own access token.
+    respx.post(TOKEN_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"access_token": "token-A", "patient": "patient-A", "scope": "s"}
+            ),
+            httpx.Response(
+                200, json={"access_token": "token-B", "patient": "patient-B", "scope": "s"}
+            ),
+        ]
+    )
+    fhir_route = respx.route(method="GET", url__startswith=ISS + "/").mock(
+        return_value=httpx.Response(200, json={"resourceType": "Bundle", "entry": []})
+    )
+
+    async with _app_db(url):
+        async with _client() as client:
+            session_a = await _authorize(client)  # bound to patient-A
+            await _authorize(client)  # bound to patient-B, most recently stored
+
+        async with _client() as client:
+            await client.get(
+                "/fhir_resources", headers={"Authorization": f"Bearer {session_a}"}
+            )
+
+    # Every resource call for session A must carry patient A's token — never the
+    # more recently stored patient B's. This is the IDOR guarantee: the session,
+    # not recency or a query param, decides whose data is read.
+    assert fhir_route.called
+    used_tokens = {
+        call.request.headers["Authorization"] for call in fhir_route.calls
+    }
+    assert used_tokens == {"Bearer token-A"}
 
 
 async def test_persist_token_updates_the_existing_identity(db_session):

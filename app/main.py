@@ -1,8 +1,13 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from pydantic import BaseModel
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 import secrets
 import httpx
@@ -20,8 +25,14 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import engine, get_session, delete_expired_states, persist_token
-from app.auth.models import OAuthState, ProviderToken
+from app.core.db import (
+    engine,
+    get_session,
+    delete_expired_states,
+    delete_expired_sessions,
+    persist_token,
+)
+from app.auth.models import AppSession, OAuthState, ProviderToken
 from app.providers.discovery import SMARTDiscovery, SMARTDiscoveryError
 from app.providers.generic import (
     GenericSMARTProvider,
@@ -39,17 +50,62 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Throttle per client IP. The auth endpoints trigger outbound discovery and DB
+# writes, and the resource endpoint fans out to many FHIR calls, so both are
+# abuse-amplification surfaces worth capping. Limits are read from settings at
+# request time so they can be tuned without touching this file.
+#
+# get_remote_address keys on the socket peer, which is correct for a direct
+# connection. Behind a reverse proxy or load balancer that becomes the proxy's
+# IP (one shared bucket for everyone), so a proxied deployment must add trusted
+# X-Forwarded-For handling (e.g. Starlette's ProxyHeadersMiddleware) and key on
+# the forwarded client address.
+limiter = Limiter(
+    key_func=get_remote_address, enabled=get_settings().rate_limit_enabled
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Only the known frontend may call the API from a browser. Credentials are not
+# used (the session travels as a bearer token, not a cookie), so a wildcard
+# origin is neither needed nor safe to combine with credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=get_settings().resolved_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 class CallbackData(BaseModel):
     code: str
     state: str
+
+
+# Resource access is gated on the app session bearer issued at /auth/callback.
+# auto_error=False so a missing or malformed header yields None and we answer 401
+# ourselves — FastAPI's built-in default for a missing bearer is 403.
+session_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_current_session(
+    credentials: HTTPAuthorizationCredentials | None = Depends(session_bearer),
+    session: AsyncSession = Depends(get_session),
+) -> AppSession:
+    """Resolve and validate the app session behind the request's bearer token.
+
+    The single authorization path for protected endpoints: a missing/malformed
+    header or an unknown/expired session is a 401 (authorize again). Returning
+    the row means the caller reaches only the patient it names, never one from
+    the request.
+    """
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing session credentials")
+
+    app_session = await session.get(AppSession, credentials.credentials)
+    if app_session is None or app_session.is_expired:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return app_session
 
 
 # A single discovery cache shared across requests: re-authorizing the same
@@ -74,8 +130,12 @@ def _provider_for(ehr: dict, iss: str) -> GenericSMARTProvider:
 
 # http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4
 @app.get("/auth/start")
+@limiter.limit(lambda: get_settings().auth_rate_limit)
 async def start_auth(
-    provider: str, iss: str, session: AsyncSession = Depends(get_session)
+    request: Request,
+    provider: str,
+    iss: str,
+    session: AsyncSession = Depends(get_session),
 ):
     ehr = config.EHR_CONFIGS.get(provider)
     if not ehr:
@@ -94,8 +154,14 @@ async def start_auth(
     # Only authorize against an issuer this provider was registered with. This
     # runs before any discovery request, so a caller cannot point us at an
     # arbitrary server to probe it (SSRF) or to receive our client secret.
+    # Exact match is the default; a provider may also opt into host-scoped prefix
+    # matching (the SMART launcher encodes standalone launch context in the aud
+    # path, so its FHIR base varies under a fixed prefix).
     allowed_issuers = {a.rstrip("/") for a in ehr.get("allowed_issuers", [])}
-    if iss not in allowed_issuers:
+    allowed_prefixes = ehr.get("allowed_issuer_prefixes", [])
+    if iss not in allowed_issuers and not any(
+        iss.startswith(prefix) for prefix in allowed_prefixes
+    ):
         return JSONResponse(
             {"error": "Issuer not allowed for this provider"}, status_code=400
         )
@@ -128,8 +194,11 @@ async def start_auth(
 
 
 @app.post("/auth/callback")
+@limiter.limit(lambda: get_settings().auth_rate_limit)
 async def handle_callback(
-    callback_data: CallbackData, session: AsyncSession = Depends(get_session)
+    request: Request,
+    callback_data: CallbackData,
+    session: AsyncSession = Depends(get_session),
 ):
     code = callback_data.code
     state = callback_data.state
@@ -172,28 +241,59 @@ async def handle_callback(
         # Timeout or network failure reaching the provider — an upstream problem.
         raise HTTPException(status_code=502, detail="Token exchange failed")
 
+    # A session is scoped to a patient, so a token with no patient context cannot
+    # anchor one. Refuse rather than store it under an empty id, which two such
+    # authorizations would then share.
+    if not token_set.patient:
+        raise HTTPException(
+            status_code=400, detail="Authorization returned no patient context"
+        )
+
     await persist_token(session, provider=provider, iss=iss, token_set=token_set)
 
+    # Issue a session bound to the patient just authorized. The frontend presents
+    # it to read resources, so access is scoped to this patient rather than to a
+    # patient id the caller could name.
+    app_session = AppSession.issue(
+        patient_fhir_id=token_set.patient,  # guaranteed present by the guard above
+        provider=provider,
+        iss=iss,
+        ttl_seconds=get_settings().app_session_ttl_seconds,
+    )
+    # Fold an expired-session sweep into the commit that persists this one, so the
+    # table stays tidy without adding a write to the resource read path.
+    await delete_expired_sessions(session)
+    session.add(app_session)
+    await session.commit()
+
     return JSONResponse(
-        content={"success": True, "patient": token_set.patient}, status_code=200
+        content={
+            "success": True,
+            "patient": token_set.patient,
+            "session_id": app_session.session_id,
+        },
+        status_code=200,
     )
 
 
 @app.get("/fhir_resources")
+@limiter.limit(lambda: get_settings().fhir_rate_limit)
 async def get_all_resource(
-    fhir_patient_id: str,
+    request: Request,
+    app_session: AppSession = Depends(get_current_session),
     session: AsyncSession = Depends(get_session),
 ):
-    if not fhir_patient_id:
-        return JSONResponse({"error": "Missing or unsupported parameters"}, status_code=400)
-
-    # The patient's stored token row knows which provider/issuer they belong to.
-    # Most recently updated connection wins if the patient has several.
+    # The session (resolved and validated by get_current_session) pins the exact
+    # connection, so look the token up by its full identity rather than by patient
+    # id alone. The patient comes from the session, never from the request, so one
+    # caller can never read another's record.
     token_row = (
         await session.execute(
-            select(ProviderToken)
-            .where(ProviderToken.patient_fhir_id == fhir_patient_id)
-            .order_by(ProviderToken.updated_at.desc())
+            select(ProviderToken).where(
+                ProviderToken.patient_fhir_id == app_session.patient_fhir_id,
+                ProviderToken.provider == app_session.provider,
+                ProviderToken.iss == app_session.iss,
+            )
         )
     ).scalars().first()
     if token_row is None:
@@ -203,7 +303,7 @@ async def get_all_resource(
     # The access token is read from storage (decrypted by the ORM) rather than
     # taken from the URL, so a bearer token never travels as a query parameter.
     resources = await service.fetch_fhir_resources(
-        token_row.access_token, token_row.iss, fhir_patient_id
+        token_row.access_token, token_row.iss, app_session.patient_fhir_id
     )
     return JSONResponse(resources)
 
