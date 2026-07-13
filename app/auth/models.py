@@ -7,6 +7,7 @@ engine), which disagree on how they round-trip timezone-aware values.
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint
@@ -79,6 +80,50 @@ class OAuthState(Base):
             iss=iss,
             provider=provider,
             code_verifier=code_verifier,
+            expires_at=utcnow() + timedelta(seconds=ttl_seconds),
+        )
+
+    @property
+    def is_expired(self) -> bool:
+        """True once the row has passed its TTL (compared in UTC)."""
+        return utcnow() >= self.expires_at
+
+
+class AppSession(Base):
+    """A short-lived session issued after a completed authorization.
+
+    Handed to the frontend as an opaque bearer token and presented on resource
+    requests. It records which patient/provider/issuer the caller authenticated
+    as, so resource access is scoped to that patient rather than to a patient id
+    the caller supplies — the difference between reading your own record and
+    reading anyone's.
+    """
+
+    __tablename__ = "app_session"
+    __table_args__ = (Index("ix_app_session_expires_at", "expires_at"),)
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    patient_fhir_id: Mapped[str] = mapped_column(String(128))
+    provider: Mapped[str] = mapped_column(String(64))
+    iss: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        patient_fhir_id: str,
+        provider: str,
+        iss: str,
+        ttl_seconds: int,
+    ) -> "AppSession":
+        """Mint a session with a fresh opaque id that expires after the TTL."""
+        return cls(
+            session_id=secrets.token_urlsafe(32),
+            patient_fhir_id=patient_fhir_id,
+            provider=provider,
+            iss=iss,
             expires_at=utcnow() + timedelta(seconds=ttl_seconds),
         )
 
