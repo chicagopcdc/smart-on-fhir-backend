@@ -208,6 +208,15 @@ async def get_all_resource(
 PAGE_SIZE_MAX = 1000
 
 
+@app.get("/providers")
+async def providers():
+    # The providers this backend is configured for (Epic sandbox, and more once they
+    # are registered), for the frontend to pin above the Lantern list. These are not in
+    # Lantern (it only lists certified production endpoints), so they can only come from
+    # our own config. Each carries the provider key /auth/start expects.
+    return JSONResponse(config.configured_providers())
+
+
 # Define an HTTP GET endpoint at path /lantern-endpoints
 @app.get("/lantern-endpoints")
 async def lantern_endpoints(
@@ -227,8 +236,9 @@ async def lantern_endpoints(
     # strip CORS headers off the response.
     data, source, data_date = await lantern.current_endpoints()
 
-    # Defensive only: the fallback seed makes an empty dataset unreachable in practice.
-    # Return a normal response (not an uncaught error) so CORS headers still attach.
+    # Only reachable if the mirror is unavailable AND no provider is configured, since
+    # the fallback seeds the dataset from the configured providers. Return a normal
+    # response (not an uncaught error) so CORS headers still attach.
     if not data:
         return JSONResponse(
             {"error": "Provider list is temporarily unavailable"}, status_code=503

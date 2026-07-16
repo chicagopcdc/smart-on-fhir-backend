@@ -84,21 +84,12 @@ _lock = asyncio.Lock()
 
 
 def _curated_fallback() -> list[dict]:
-    """A minimal list built from the providers this backend is configured for.
-
-    Derived from ``EHR_CONFIGS`` so it never drifts from the servers we can actually
-    authorize against, and so it grows automatically as providers are added. It is the
-    only source that cannot fail, which guarantees the dropdown and the connect flow
-    keep working even if the mirror is deleted outright.
-    """
-    rows: list[dict] = []
-    seen: set[str] = set()
-    for key, ehr in config.EHR_CONFIGS.items():
-        for iss in ehr.get("allowed_issuers", []):
-            if iss and iss not in seen:
-                seen.add(iss)
-                rows.append({"url": iss, "name": f"{key} (configured provider)"})
-    return rows
+    """The endpoint-list fallback served when the mirror is unreachable: the configured
+    providers projected to the ``{url, name}`` shape ``/lantern-endpoints`` returns, so
+    the dropdown and the connect flow keep working even if the mirror is deleted."""
+    return [
+        {"url": p["iss"], "name": p["name"]} for p in config.configured_providers()
+    ]
 
 
 # Seed at import so there is always something to serve before any network call.

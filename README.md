@@ -93,6 +93,7 @@ The API is now at http://localhost:8000, with interactive docs at http://localho
 | POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns the connected patient's id. |
 | GET | `/fhir_resources?fhir_patient_id=` | Fetch the patient's FHIR resources using the stored token. |
 | GET | `/lantern-endpoints?query=&page=&pageSize=` | Search the national list of FHIR endpoints (from ONC Lantern). |
+| GET | `/providers` | The providers this backend is configured for, for the frontend to offer alongside the Lantern list. Each carries the `provider` key `/auth/start` expects. |
 
 ## Tests
 
