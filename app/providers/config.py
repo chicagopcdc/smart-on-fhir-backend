@@ -107,6 +107,32 @@ def validate_issuer_prefixes(configs: dict) -> None:
 validate_issuer_prefixes(EHR_CONFIGS)
 
 
+def configured_providers() -> list[dict]:
+    """The providers this backend can actually authorize against, for the frontend's
+    dropdown: one ``{"provider", "iss", "name"}`` entry per allowed issuer.
+
+    Providers with no ``client_id`` are skipped — ``/auth/start`` rejects those as
+    unconfigured, so offering them would be a dead end. Derived from ``EHR_CONFIGS`` so
+    the list never drifts from what we can connect to, and grows automatically as
+    providers are added (nothing to keep in sync on the frontend). An issuer is listed
+    once even if two providers allow it, since the frontend keys its options by issuer.
+    """
+    by_issuer: dict[str, dict] = {}
+    for key, ehr in EHR_CONFIGS.items():
+        if not ehr.get("client_id"):
+            continue
+        for iss in ehr.get("allowed_issuers", []):
+            if iss:
+                # Canonicalize the same way /auth/start does, so the issuer offered here
+                # is exactly the one the allowlist accepts back.
+                iss = iss.rstrip("/")
+                by_issuer.setdefault(
+                    iss,
+                    {"provider": key, "iss": iss, "name": key.replace("_", " ").title()},
+                )
+    return list(by_issuer.values())
+
+
 RESOURCE_FETCH_CONFIG = {
     "Account": {"url_template": "/Account", "needs_patient_param": True},
     "AdverseEvent": {"url_template": "/AdverseEvent", "needs_patient_param": True},

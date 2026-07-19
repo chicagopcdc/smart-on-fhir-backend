@@ -12,15 +12,11 @@ from slowapi.util import get_remote_address
 import secrets
 import httpx
 
-from app.providers import config
+from app.providers import config, lantern
 from app.fhir import service
 
 from contextlib import asynccontextmanager
-from functools import lru_cache
-from typing import List
-from fastapi import  Query
-import csv, io
-from datetime import date, timedelta
+from fastapi import Query
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -308,64 +304,18 @@ async def get_all_resource(
     return JSONResponse(resources)
 
 
-# ONC's Lantern REST download API (lantern.healthit.gov/api/daily/download) started
-# returning 404 in mid-2026. Lantern publishes the same daily endpoint CSV to a
-# public GitHub repo, so we read the most recent file from there. Files are named
-# lantern-daily-data/<year>/<Month>/<MM_DD_YYYY>endpointdata.csv.
-LANTERN_MIRROR_BASE = (
-    "https://raw.githubusercontent.com/onc-healthit/onc-open-data/main/lantern-daily-data"
-)
-
-# How many days back to look for the newest published file. The mirror can lag a
-# day or two, so we search a window rather than assuming today's file exists.
-LANTERN_LOOKBACK_DAYS = 14
-
-# Full month names, indexed 1..12. The mirror path uses English month names, so we
-# build the segment explicitly rather than with strftime("%B"), which would follow
-# the process locale and break on a non-English one.
-_MONTHS = [
-    "", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-]
-
 # Maximum allowed number of rows per page in the response
 PAGE_SIZE_MAX = 1000
 
 
-def _latest_lantern_csv_url() -> str:
-    """Return the URL of the newest endpoint CSV in the Lantern mirror.
+@app.get("/providers")
+async def providers():
+    # The providers this backend is configured for (Epic sandbox, and more once they
+    # are registered), for the frontend to pin above the Lantern list. These are not in
+    # Lantern (it only lists certified production endpoints), so they can only come from
+    # our own config. Each carries the provider key /auth/start expects.
+    return JSONResponse(config.configured_providers())
 
-    Walks back from today and returns the first daily file that exists, so a
-    missing or not-yet-published day is skipped automatically. The result is
-    cached by load_dataset, so this fan-out of HEAD requests runs at most once per
-    process on the happy path (today's file exists -> a single HEAD). A short
-    per-request timeout bounds the worst case if GitHub is unreachable.
-    """
-    today = date.today()
-    with httpx.Client(timeout=8.0, follow_redirects=True) as client:
-        for offset in range(LANTERN_LOOKBACK_DAYS):
-            day = today - timedelta(days=offset)
-            url = (
-                f"{LANTERN_MIRROR_BASE}/{day.year}/{_MONTHS[day.month]}/"
-                f"{day:%m_%d_%Y}endpointdata.csv"
-            )
-            if client.head(url).status_code == 200:
-                return url
-    raise RuntimeError(
-        f"No Lantern endpoint CSV found in the last {LANTERN_LOOKBACK_DAYS} days"
-    )
-
-
-# Cache the result so the ~30 MB file is downloaded and parsed once per process.
-@lru_cache(maxsize=1)
-def load_dataset() -> List[dict]:
-    url = _latest_lantern_csv_url()
-    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-        r = client.get(url)
-        r.raise_for_status()
-
-    reader = csv.DictReader(io.StringIO(r.text))
-    return [row for row in reader if row.get("url")]
 
 # Define an HTTP GET endpoint at path /lantern-endpoints
 @app.get("/lantern-endpoints")
@@ -380,15 +330,26 @@ async def lantern_endpoints(
         description="Rows per page",
     ),
 ):
-    # Load the full dataset from cache or fetch if not cached
-    data = load_dataset()
+    # Serve from the in-memory dataset, refreshing it opportunistically. This never
+    # raises: on any upstream failure the last-good (or seeded fallback) data is kept,
+    # so a bad data source degrades to stale data instead of a 500 that would also
+    # strip CORS headers off the response.
+    data, source, data_date = await lantern.current_endpoints()
+
+    # Only reachable if the mirror is unavailable AND no provider is configured, since
+    # the fallback seeds the dataset from the configured providers. Return a normal
+    # response (not an uncaught error) so CORS headers still attach.
+    if not data:
+        return JSONResponse(
+            {"error": "Provider list is temporarily unavailable"}, status_code=503
+        )
 
     # If a query is provided, filter the dataset by matching URL or name (case-insensitive)
     if query:
         q = query.lower()
         data = [
             row for row in data
-            if q in row["url"].lower() or q in row["api_information_source_name"].lower()
+            if q in row["url"].lower() or q in row["name"].lower()
         ]
 
     # Calculate start and end indices for pagination
@@ -401,7 +362,7 @@ async def lantern_endpoints(
         {
             "idx": idx,  # Global index of the row
             "url": r["url"],  # Endpoint URL
-            "name": r["api_information_source_name"],  # Name of the API source
+            "name": r["name"],  # Name of the API source
         }
         for idx, r in enumerate(slice_, start=start)
     ]
@@ -414,5 +375,7 @@ async def lantern_endpoints(
             "totalRows": len(data),  # Total number of matching rows
             "hasMore": end < len(data),  # Whether there are more pages
             "rows": rows,  # The data rows for this page
+            "source": source,  # "mirror" (live file) or "fallback"
+            "dataDate": data_date,  # ISO date of the served file, or null for the fallback
         }
     )
