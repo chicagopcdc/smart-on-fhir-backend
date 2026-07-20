@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 
 from cryptography.fernet import Fernet
 
@@ -17,7 +15,13 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
 os.environ["EPIC_SANDBOX_CLIENT_ID"] = "test-sandbox-client-id"
 os.environ["EPIC_SANDBOX_CLIENT_SECRET"] = "test-sandbox-client-secret"
+# A public-client sandbox registered without a secret; PKCE stands in for a
+# client secret, so no CERNER_CLIENT_SECRET is set.
+os.environ["CERNER_CLIENT_ID"] = "test-cerner-client-id"
 os.environ["FRONTEND_HOSTNAME"] = "http://localhost:3000"
+# Throttling off by default so request-heavy flow tests are never rate limited;
+# the one rate-limit test re-enables it for its own duration.
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -31,12 +35,7 @@ from app.providers.models import (  # noqa: E402
     SMARTConfiguration,
     TokenSet,
 )
-
-_FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _load_json(name: str) -> dict:
-    return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
+from tests.app_harness import load_fixture  # noqa: E402
 
 
 class StubProvider(FHIRProvider):
@@ -52,6 +51,16 @@ class StubProvider(FHIRProvider):
         raise NotImplementedError
 
 
+@pytest.fixture(autouse=True)
+def _reset_discovery_cache():
+    """Keep the app's shared discovery cache from leaking configs between tests."""
+    from app import main
+
+    main._discovery.clear()
+    yield
+    main._discovery.clear()
+
+
 @pytest.fixture
 def make_provider():
     def _make(discovery=None) -> StubProvider:
@@ -62,12 +71,12 @@ def make_provider():
 
 @pytest.fixture
 def epic_smart_config() -> dict:
-    return _load_json("epic_smart_config.json")
+    return load_fixture("epic_smart_config.json")
 
 
 @pytest.fixture
 def public_smart_config() -> dict:
-    return _load_json("smarthealthit_smart_config.json")
+    return load_fixture("smarthealthit_smart_config.json")
 
 
 @pytest_asyncio.fixture

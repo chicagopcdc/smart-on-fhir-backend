@@ -30,7 +30,81 @@ EHR_CONFIGS = {
             "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
         ],
     },
+    # Public SMART App Launcher. A public client (no secret) that relies on PKCE;
+    # the launcher does not validate the client_id, so a default keeps the flow
+    # runnable without any registration.
+    "SMART_LAUNCHER": {
+        "client_id": _settings.smart_launcher_client_id or "smart-fhir-backend",
+        "client_secret": None,
+        "redirect_uri": _redirect_uri,
+        "scopes": _DEFAULT_SCOPES,
+        "allowed_issuers": [
+            "https://launch.smarthealthit.org/v/r4/fhir",
+        ],
+        # A standalone launch against the launcher encodes its launch context in
+        # the aud path (.../v/r4/sim/<opts>/fhir), so accept any FHIR base under
+        # the launcher's r4 tree in addition to the plain base. Safe as a prefix
+        # only here: this is a public client (no secret is ever sent), the prefix
+        # is same-host, and it ends in "/v/r4/" so a suffix look-alike host such
+        # as "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
+        # keep exact-match allowlisting (no prefixes) for tenant isolation.
+        "allowed_issuer_prefixes": [
+            "https://launch.smarthealthit.org/v/r4/",
+        ],
+    },
+    # Cerner / Oracle Health sandbox, registered as a public client. Discovery
+    # advertises S256, so the same adapter turns on PKCE automatically.
+    "CERNER_SANDBOX": {
+        "client_id": _settings.cerner_client_id,
+        "client_secret": None,
+        "redirect_uri": _redirect_uri,
+        "scopes": _DEFAULT_SCOPES,
+        "allowed_issuers": [
+            "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+        ],
+    },
 }
+
+
+def validate_issuer_prefixes(configs: dict) -> None:
+    """Fail fast if any provider's ``allowed_issuer_prefixes`` is unsafe.
+
+    Prefix matching in ``start_auth`` widens which issuers a provider may talk to,
+    so it is only safe when two invariants hold — both enforced here rather than
+    left to a comment, so they cannot silently rot as configs change:
+
+    * The provider sends **no client secret**. Prefix matching on a confidential
+      client would let its secret reach any host under the prefix.
+    * Each prefix is an ``https`` URL whose authority is terminated by a path
+      separator, so a suffix look-alike host (``…smarthealthit.org.evil.example/…``)
+      cannot match it. (A bare string used in place of the list would otherwise be
+      iterated character by character.)
+    """
+    for key, ehr in configs.items():
+        prefixes = ehr.get("allowed_issuer_prefixes", [])
+        if not isinstance(prefixes, list):
+            raise ValueError(
+                f"allowed_issuer_prefixes for {key!r} must be a list, got {type(prefixes).__name__}"
+            )
+        if prefixes and ehr.get("client_secret") is not None:
+            raise ValueError(
+                f"{key!r} sets allowed_issuer_prefixes but has a client_secret; "
+                "prefix matching is only safe for a public client that sends no secret"
+            )
+        for prefix in prefixes:
+            if (
+                not isinstance(prefix, str)
+                or not prefix.startswith("https://")
+                or "/" not in prefix[len("https://") :]
+            ):
+                raise ValueError(
+                    f"unsafe allowed_issuer_prefixes entry for {key!r}: {prefix!r} — "
+                    "must be an https URL with a path so the host is fully committed"
+                )
+
+
+# Validate at import so a misconfigured prefix fails at startup, not at runtime.
+validate_issuer_prefixes(EHR_CONFIGS)
 
 
 def configured_providers() -> list[dict]:

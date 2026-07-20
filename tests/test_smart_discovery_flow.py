@@ -23,6 +23,9 @@ WELL_KNOWN = "/.well-known/smart-configuration"
 
 EPIC_ISS = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 PUBLIC_ISS = "https://launch.smarthealthit.org/v/r4/fhir"
+CERNER_ISS = (
+    "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
+)
 
 
 # Happy path: discover a real server, then use what came back.
@@ -182,3 +185,9 @@ async def test_live_discovery_against_real_servers(make_provider):
     public = await provider.discover(PUBLIC_ISS)
     assert public.supports_pkce
     assert str(public.token_endpoint).endswith("/auth/token")
+
+    # Cerner / Oracle Health advertises S256 too, so the adapter enables PKCE
+    # against it with no vendor-specific handling.
+    cerner = await provider.discover(CERNER_ISS)
+    assert cerner.supports_pkce
+    assert "client_secret_basic" in cerner.token_endpoint_auth_methods_supported

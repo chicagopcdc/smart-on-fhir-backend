@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.auth.models import OAuthState, ProviderToken, utcnow
+from app.auth.models import AppSession, OAuthState, ProviderToken, utcnow
 from app.providers.models import TokenSet
 from app.core.config import get_settings
 
@@ -39,16 +39,27 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def delete_expired_states(session: AsyncSession) -> int:
-    """Stage deletion of OAuth state rows past their TTL; the caller commits.
+async def _delete_expired(session: AsyncSession, model) -> int:
+    """Stage deletion of a TTL model's rows past their expiry; the caller commits.
 
     Returns the number of rows removed. Compared in UTC to match how
-    ``expires_at`` is stored.
+    ``expires_at`` is stored. Both TTL tables sweep the same way, so they share
+    this implementation rather than drifting apart.
     """
     result = await session.execute(
-        delete(OAuthState).where(OAuthState.expires_at < utcnow())
+        delete(model).where(model.expires_at < utcnow())
     )
     return result.rowcount or 0
+
+
+async def delete_expired_states(session: AsyncSession) -> int:
+    """Stage deletion of OAuth state rows past their TTL; the caller commits."""
+    return await _delete_expired(session, OAuthState)
+
+
+async def delete_expired_sessions(session: AsyncSession) -> int:
+    """Stage deletion of app session rows past their TTL; the caller commits."""
+    return await _delete_expired(session, AppSession)
 
 
 async def persist_token(
