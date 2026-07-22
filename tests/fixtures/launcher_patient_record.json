@@ -1,0 +1,1539 @@
+{
+ "patientId": "8f65af92-c3c9-4316-bb7f-862c248788dd",
+ "responses": {
+  "AllergyIntolerance": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "5a99535a-10f7-46eb-8037-36213370627f",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:02.065-04:00"
+    },
+    "type": "searchset",
+    "total": 0,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/AllergyIntolerance?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     }
+    ],
+    "entry": []
+   }
+  },
+  "CarePlan": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "072a1ef3-a29e-4595-8a53-08c3f7f2dc4e",
+    "meta": {
+     "lastUpdated": "2026-07-20T19:11:46.994-04:00"
+    },
+    "type": "searchset",
+    "total": 2,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/CarePlan?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/CarePlan/e6eb1f4e-f996-4447-8a8a-f8ac0521579d",
+      "resource": {
+       "resourceType": "CarePlan",
+       "id": "e6eb1f4e-f996-4447-8a8a-f8ac0521579d",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:08:51.910-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "text": {
+        "status": "generated",
+        "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Care Plan for Urinary tract infection care.<br/>Activities: <ul><li>Urinary tract infection care</li><li>Urinary tract infection care</li></ul><br/>Care plan is meant to treat Cystitis.</div>"
+       },
+       "status": "completed",
+       "intent": "order",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "869761000000107",
+           "display": "Urinary tract infection care"
+          }
+         ],
+         "text": "Urinary tract infection care"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/c20c4db6-c149-46cc-b6e5-d9dfd1e5188d"
+       },
+       "period": {
+        "start": "2008-12-13T11:51:55+00:00",
+        "end": "2008-12-20T11:51:55+00:00"
+       },
+       "addresses": [
+        {
+         "reference": "Condition/65d3c2f3-d809-4117-98b5-a0a48d655724"
+        }
+       ],
+       "activity": [
+        {
+         "detail": {
+          "code": {
+           "coding": [
+            {
+             "system": "http://snomed.info/sct",
+             "code": "223472008",
+             "display": "Discussion about hygiene"
+            }
+           ],
+           "text": "Discussion about hygiene"
+          },
+          "status": "completed"
+         }
+        },
+        {
+         "detail": {
+          "code": {
+           "coding": [
+            {
+             "system": "http://snomed.info/sct",
+             "code": "171245007",
+             "display": "Urine screening"
+            }
+           ],
+           "text": "Urine screening"
+          },
+          "status": "completed"
+         }
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/CarePlan/00138067-c2b1-49b3-bbbe-602b8b3a4c46",
+      "resource": {
+       "resourceType": "CarePlan",
+       "id": "00138067-c2b1-49b3-bbbe-602b8b3a4c46",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T02:58:54.068-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "text": {
+        "status": "generated",
+        "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Care Plan for Diabetes self management plan.<br/>Activities: <ul><li>Diabetes self management plan</li><li>Diabetes self management plan</li></ul><br/>Care plan is meant to treat Prediabetes.</div>"
+       },
+       "status": "active",
+       "intent": "order",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "698360004",
+           "display": "Diabetes self management plan"
+          }
+         ],
+         "text": "Diabetes self management plan"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/18acd593-4cf4-4de7-b622-f78764a8af3e"
+       },
+       "period": {
+        "start": "1985-02-01T11:51:55+00:00"
+       },
+       "addresses": [
+        {
+         "reference": "Condition/c6064b68-eb1f-4dec-b7a7-82e99b5f9600"
+        }
+       ],
+       "goal": [
+        {
+         "reference": "Goal/39d6a3a7-ca70-43dd-b990-d2fe65c71e55"
+        },
+        {
+         "reference": "Goal/71da4361-826b-4521-b956-7eaa02ea6c29"
+        },
+        {
+         "reference": "Goal/abff3c2f-c217-453d-85fb-fbc4b8a3d8cf"
+        },
+        {
+         "reference": "Goal/1973f6dd-a7a3-4409-914e-460e43f14b6a"
+        },
+        {
+         "reference": "Goal/a2b4b153-dec3-4130-8de0-eb6cd7937b2a"
+        }
+       ],
+       "activity": [
+        {
+         "detail": {
+          "code": {
+           "coding": [
+            {
+             "system": "http://snomed.info/sct",
+             "code": "160670007",
+             "display": "Diabetic diet"
+            }
+           ],
+           "text": "Diabetic diet"
+          },
+          "status": "in-progress"
+         }
+        },
+        {
+         "detail": {
+          "code": {
+           "coding": [
+            {
+             "system": "http://snomed.info/sct",
+             "code": "229065009",
+             "display": "Exercise therapy"
+            }
+           ],
+           "text": "Exercise therapy"
+          },
+          "status": "in-progress"
+         }
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "Condition": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "078482ae-7681-42c8-a31f-c766d49926e5",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:02.488-04:00"
+    },
+    "type": "searchset",
+    "total": 17,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Condition?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=078482ae-7681-42c8-a31f-c766d49926e5&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Condition/aaff90aa-7192-4279-83bc-bb50c8c91a0f",
+      "resource": {
+       "resourceType": "Condition",
+       "id": "aaff90aa-7192-4279-83bc-bb50c8c91a0f",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:10:34.451-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "clinicalStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+          "code": "active"
+         }
+        ]
+       },
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+          "code": "confirmed"
+         }
+        ]
+       },
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "422034002",
+          "display": "Diabetic retinopathy associated with type II diabetes mellitus (disorder)"
+         }
+        ],
+        "text": "Diabetic retinopathy associated with type II diabetes mellitus (disorder)"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/e5f5dae7-bcf5-4b90-b250-898e5e25a736"
+       },
+       "onsetDateTime": "1994-09-23T11:51:55+00:00",
+       "recordedDate": "1994-09-23T11:51:55+00:00"
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Condition/31f1a8de-d38e-449f-9b24-a3cca1c11baa",
+      "resource": {
+       "resourceType": "Condition",
+       "id": "31f1a8de-d38e-449f-9b24-a3cca1c11baa",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:09:34.724-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "clinicalStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+          "code": "active"
+         }
+        ]
+       },
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+          "code": "confirmed"
+         }
+        ]
+       },
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "237602007",
+          "display": "Metabolic syndrome X (disorder)"
+         }
+        ],
+        "text": "Metabolic syndrome X (disorder)"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/d5f95281-5a99-4594-9985-8bf0c15f05c3"
+       },
+       "onsetDateTime": "1992-09-18T11:51:55+00:00",
+       "recordedDate": "1992-09-18T11:51:55+00:00"
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "DiagnosticReport": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "18fc1a08-e52a-4a40-ab72-73bf4858bb1b",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:02.930-04:00"
+    },
+    "type": "searchset",
+    "total": 23,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/DiagnosticReport?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=18fc1a08-e52a-4a40-ab72-73bf4858bb1b&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/DiagnosticReport/0e68dd07-6a48-4e7c-9627-72207a0d7726",
+      "resource": {
+       "resourceType": "DiagnosticReport",
+       "id": "0e68dd07-6a48-4e7c-9627-72207a0d7726",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:31.725-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/v2-0074",
+           "code": "LAB",
+           "display": "Laboratory"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "69409-1",
+          "display": "U.S. standard certificate of death - 2003 revision"
+         }
+        ],
+        "text": "U.S. standard certificate of death - 2003 revision"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/badd32ae-6afe-4b68-9464-e314b08b092a"
+       },
+       "effectiveDateTime": "2017-01-20T11:51:55+00:00",
+       "issued": "2017-01-20T11:51:55.427+00:00",
+       "result": [
+        {
+         "reference": "Observation/249a2952-e56d-4a87-916c-d32820821ce8",
+         "display": "Cause of Death [US Standard Certificate of Death]"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/DiagnosticReport/4e0fa863-b579-40da-848b-5ffe748f7f86",
+      "resource": {
+       "resourceType": "DiagnosticReport",
+       "id": "4e0fa863-b579-40da-848b-5ffe748f7f86",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:09.504-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/v2-0074",
+           "code": "LAB",
+           "display": "Laboratory"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "57698-3",
+          "display": "Lipid Panel"
+         }
+        ],
+        "text": "Lipid Panel"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/3617b57c-d7c3-4f8c-b793-01b1ff4e6d52"
+       },
+       "effectiveDateTime": "2012-12-07T11:51:55+00:00",
+       "issued": "2012-12-07T11:51:55.427+00:00",
+       "result": [
+        {
+         "reference": "Observation/11fa52ad-d95f-44d9-98a2-de7d53dd096e",
+         "display": "Total Cholesterol"
+        },
+        {
+         "reference": "Observation/1fbe0c1c-6ced-4659-a352-86011116f5d8",
+         "display": "Triglycerides"
+        },
+        {
+         "reference": "Observation/13e1caf0-c17d-4ecc-ac7c-cb62ce75969e",
+         "display": "Low Density Lipoprotein Cholesterol"
+        },
+        {
+         "reference": "Observation/5db192db-1988-4666-b87e-52fa62554919",
+         "display": "High Density Lipoprotein Cholesterol"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "Encounter": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "8c3989a3-9a2d-444e-b347-ad3d34336775",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:03.415-04:00"
+    },
+    "type": "searchset",
+    "total": 28,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Encounter?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=8c3989a3-9a2d-444e-b347-ad3d34336775&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Encounter/c1066202-22d0-4f90-9e3c-76fc77adfef8",
+      "resource": {
+       "resourceType": "Encounter",
+       "id": "c1066202-22d0-4f90-9e3c-76fc77adfef8",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:08:30.409-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "finished",
+       "class": {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code": "AMB"
+       },
+       "type": [
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "185349003",
+           "display": "Encounter for check up (procedure)"
+          }
+         ],
+         "text": "Encounter for check up (procedure)"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "participant": [
+        {
+         "individual": {
+          "reference": "Practitioner/a6dfe8e5-f65e-4eda-a572-850f7ac0d7cf"
+         }
+        }
+       ],
+       "period": {
+        "start": "1987-09-11T11:51:55+00:00",
+        "end": "1987-09-11T12:06:55+00:00"
+       },
+       "serviceProvider": {
+        "reference": "Organization/9a7149fa-49fc-3c87-b935-d29c55808717"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Encounter/d552947b-596b-40bf-b820-95b9405f484b",
+      "resource": {
+       "resourceType": "Encounter",
+       "id": "d552947b-596b-40bf-b820-95b9405f484b",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:07:15.014-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "finished",
+       "class": {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code": "AMB"
+       },
+       "type": [
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "185345009",
+           "display": "Encounter for symptom"
+          }
+         ],
+         "text": "Encounter for symptom"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "participant": [
+        {
+         "individual": {
+          "reference": "Practitioner/a6dfe8e5-f65e-4eda-a572-850f7ac0d7cf"
+         }
+        }
+       ],
+       "period": {
+        "start": "1978-08-25T11:51:55+00:00",
+        "end": "1978-08-25T12:06:55+00:00"
+       },
+       "reasonCode": [
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "36971009",
+           "display": "Sinusitis (disorder)"
+          }
+         ]
+        }
+       ],
+       "serviceProvider": {
+        "reference": "Organization/9a7149fa-49fc-3c87-b935-d29c55808717"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "Immunization": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "be83e350-00d8-438d-9ceb-aea032dd1989",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:03.857-04:00"
+    },
+    "type": "searchset",
+    "total": 13,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Immunization?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=be83e350-00d8-438d-9ceb-aea032dd1989&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Immunization/7fec8547-f0ff-4434-9dc1-f820de26724f",
+      "resource": {
+       "resourceType": "Immunization",
+       "id": "7fec8547-f0ff-4434-9dc1-f820de26724f",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:10:53.228-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "completed",
+       "vaccineCode": {
+        "coding": [
+         {
+          "system": "http://hl7.org/fhir/sid/cvx",
+          "code": "140",
+          "display": "Influenza, seasonal, injectable, preservative free"
+         }
+        ],
+        "text": "Influenza, seasonal, injectable, preservative free"
+       },
+       "patient": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/359f0f4f-cafd-41a7-a72a-115785a94f03"
+       },
+       "occurrenceDateTime": "2014-12-19T11:51:55+00:00",
+       "primarySource": true
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Immunization/bd6b398f-f51b-43c5-a1e2-1f739cc56923",
+      "resource": {
+       "resourceType": "Immunization",
+       "id": "bd6b398f-f51b-43c5-a1e2-1f739cc56923",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:09:09.961-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "completed",
+       "vaccineCode": {
+        "coding": [
+         {
+          "system": "http://hl7.org/fhir/sid/cvx",
+          "code": "133",
+          "display": "Pneumococcal conjugate PCV 13"
+         }
+        ],
+        "text": "Pneumococcal conjugate PCV 13"
+       },
+       "patient": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/425db991-9c1c-40c6-b5a6-8c45396c9e92"
+       },
+       "occurrenceDateTime": "2015-12-25T11:51:55+00:00",
+       "primarySource": true
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "MedicationRequest": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "521b3b9e-bb71-4083-8646-3b66bdc3de48",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:04.296-04:00"
+    },
+    "type": "searchset",
+    "total": 10,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/MedicationRequest?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=521b3b9e-bb71-4083-8646-3b66bdc3de48&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/MedicationRequest/564ecfb6-7d81-439e-89d8-893d5b04723a",
+      "resource": {
+       "resourceType": "MedicationRequest",
+       "id": "564ecfb6-7d81-439e-89d8-893d5b04723a",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:24.343-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "stopped",
+       "intent": "order",
+       "medicationCodeableConcept": {
+        "coding": [
+         {
+          "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+          "code": "833036",
+          "display": "Captopril 25 MG Oral Tablet"
+         }
+        ],
+        "text": "Captopril 25 MG Oral Tablet"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/198b617a-12b7-4d2d-a4ca-f83cdd0b76de"
+       },
+       "authoredOn": "2017-01-13T11:51:55+00:00",
+       "requester": {
+        "reference": "Practitioner/e443ac58-8ece-4385-8d55-775c1b8f3a37"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/MedicationRequest/adf5d965-4de3-47d0-8284-8d977c55f165",
+      "resource": {
+       "resourceType": "MedicationRequest",
+       "id": "adf5d965-4de3-47d0-8284-8d977c55f165",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:16.862-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "active",
+       "intent": "order",
+       "medicationCodeableConcept": {
+        "coding": [
+         {
+          "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+          "code": "197361",
+          "display": "Amlodipine 5 MG Oral Tablet"
+         }
+        ],
+        "text": "Amlodipine 5 MG Oral Tablet"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/c20c4db6-c149-46cc-b6e5-d9dfd1e5188d"
+       },
+       "authoredOn": "2008-11-14T11:51:55+00:00",
+       "requester": {
+        "reference": "Practitioner/a6dfe8e5-f65e-4eda-a572-850f7ac0d7cf"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "ObservationLaboratory": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "17b93730-f728-447d-bf4d-cdb555e949bf",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:04.741-04:00"
+    },
+    "type": "searchset",
+    "total": 173,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Observation?_count=2&category=laboratory&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=17b93730-f728-447d-bf4d-cdb555e949bf&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Observation/abaaef5b-b875-4d8c-ab4e-379fefc8b25d",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "abaaef5b-b875-4d8c-ab4e-379fefc8b25d",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:26.937-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "laboratory",
+           "display": "laboratory"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "4548-4",
+          "display": "Hemoglobin A1c/Hemoglobin.total in Blood"
+         }
+        ],
+        "text": "Hemoglobin A1c/Hemoglobin.total in Blood"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/3617b57c-d7c3-4f8c-b793-01b1ff4e6d52"
+       },
+       "effectiveDateTime": "2012-12-07T11:51:55+00:00",
+       "issued": "2012-12-07T11:51:55.427+00:00",
+       "valueQuantity": {
+        "value": 7.499941826995058,
+        "unit": "%",
+        "system": "http://unitsofmeasure.org",
+        "code": "%"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Observation/49d35b65-f160-46aa-bddf-925198437f9c",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "49d35b65-f160-46aa-bddf-925198437f9c",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:24.924-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "laboratory",
+           "display": "laboratory"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "14959-1",
+          "display": "Microalbumin Creatinine Ratio"
+         }
+        ],
+        "text": "Microalbumin Creatinine Ratio"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/2ca8708a-c199-4446-bd06-b94e3f67c1ac"
+       },
+       "effectiveDateTime": "2011-12-02T11:51:55+00:00",
+       "issued": "2011-12-02T11:51:55.427+00:00",
+       "valueQuantity": {
+        "value": 13.595498582832292,
+        "unit": "mg/g",
+        "system": "http://unitsofmeasure.org",
+        "code": "mg/g"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "ObservationVitalSigns": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "2e4a39fc-4722-461b-947d-bd5a76c16b2c",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:05.477-04:00"
+    },
+    "type": "searchset",
+    "total": 50,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Observation?_count=2&category=vital-signs&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=2e4a39fc-4722-461b-947d-bd5a76c16b2c&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Observation/a5de5ea6-52f0-46a0-b168-65363923aed5",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "a5de5ea6-52f0-46a0-b168-65363923aed5",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:21.645-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "vital-signs",
+           "display": "vital-signs"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "8302-2",
+          "display": "Body Height"
+         }
+        ],
+        "text": "Body Height"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/425db991-9c1c-40c6-b5a6-8c45396c9e92"
+       },
+       "effectiveDateTime": "2015-12-25T11:51:55+00:00",
+       "issued": "2015-12-25T11:51:55.427+00:00",
+       "valueQuantity": {
+        "value": 152.0779458245947,
+        "unit": "cm",
+        "system": "http://unitsofmeasure.org",
+        "code": "cm"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Observation/07d7a27a-5479-4c07-840f-c963d9c68c6f",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "07d7a27a-5479-4c07-840f-c963d9c68c6f",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:11.600-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "vital-signs",
+           "display": "vital-signs"
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://loinc.org",
+          "code": "29463-7",
+          "display": "Body Weight"
+         }
+        ],
+        "text": "Body Weight"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/2ca8708a-c199-4446-bd06-b94e3f67c1ac"
+       },
+       "effectiveDateTime": "2011-12-02T11:51:55+00:00",
+       "issued": "2011-12-02T11:51:55.427+00:00",
+       "valueQuantity": {
+        "value": 69.38256665552515,
+        "unit": "kg",
+        "system": "http://unitsofmeasure.org",
+        "code": "kg"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  },
+  "Patient": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Patient",
+    "id": "8f65af92-c3c9-4316-bb7f-862c248788dd",
+    "meta": {
+     "versionId": "9",
+     "lastUpdated": "2025-08-25T18:23:56.338-04:00",
+     "tag": [
+      {
+       "system": "https://smarthealthit.org/tags",
+       "code": "synthea-5-2019"
+      }
+     ]
+    },
+    "text": {
+     "status": "generated",
+     "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Generated by <a href=\"https://github.com/synthetichealth/synthea\">Synthea</a>.Version identifier: v2.4.0-100-g26a4b936\n .   Person seed: -5337503786304535143  Population seed: 1559319163074</div>"
+    },
+    "extension": [
+     {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race",
+      "extension": [
+       {
+        "url": "ombCategory",
+        "valueCoding": {
+         "system": "urn:oid:2.16.840.1.113883.6.238",
+         "code": "2028-9",
+         "display": "Asian"
+        }
+       },
+       {
+        "url": "text",
+        "valueString": "Asian"
+       }
+      ]
+     },
+     {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+      "extension": [
+       {
+        "url": "ombCategory",
+        "valueCoding": {
+         "system": "urn:oid:2.16.840.1.113883.6.238",
+         "code": "2186-5",
+         "display": "Not Hispanic or Latino"
+        }
+       },
+       {
+        "url": "text",
+        "valueString": "Not Hispanic or Latino"
+       }
+      ]
+     },
+     {
+      "url": "http://hl7.org/fhir/StructureDefinition/patient-mothersMaidenName",
+      "valueString": "Jewel Terry"
+     },
+     {
+      "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthsex",
+      "valueCode": "F"
+     },
+     {
+      "url": "http://hl7.org/fhir/StructureDefinition/patient-birthPlace",
+      "valueAddress": {
+       "city": "Chongqing",
+       "state": "Chongqing Municipality",
+       "country": "CN"
+      }
+     },
+     {
+      "url": "http://synthetichealth.github.io/synthea/disability-adjusted-life-years",
+      "valueDecimal": 7.970963161544873
+     },
+     {
+      "url": "http://synthetichealth.github.io/synthea/quality-adjusted-life-years",
+      "valueDecimal": 57.02903683845513
+     }
+    ],
+    "identifier": [
+     {
+      "system": "https://github.com/synthetichealth/synthea",
+      "value": "fd04234a-e56d-4362-88a5-bbaa47addb6b"
+     },
+     {
+      "type": {
+       "coding": [
+        {
+         "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+         "code": "MR",
+         "display": "Medical Record Number"
+        }
+       ],
+       "text": "Medical Record Number"
+      },
+      "system": "http://hospital.smarthealthit.org",
+      "value": "fd04234a-e56d-4362-88a5-bbaa47addb6b"
+     },
+     {
+      "type": {
+       "coding": [
+        {
+         "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+         "code": "SS",
+         "display": "Social Security Number"
+        }
+       ],
+       "text": "Social Security Number"
+      },
+      "system": "http://hl7.org/fhir/sid/us-ssn",
+      "value": "999-20-3930"
+     },
+     {
+      "type": {
+       "coding": [
+        {
+         "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+         "code": "DL",
+         "display": "Driver's License"
+        }
+       ],
+       "text": "Driver's License"
+      },
+      "system": "urn:oid:2.16.840.1.113883.4.3.25",
+      "value": "S99943973"
+     },
+     {
+      "type": {
+       "coding": [
+        {
+         "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+         "code": "PPN",
+         "display": "Passport Number"
+        }
+       ],
+       "text": "Passport Number"
+      },
+      "system": "http://standardhealthrecord.org/fhir/StructureDefinition/passportNumber",
+      "value": "X26825917X"
+     }
+    ],
+    "name": [
+     {
+      "use": "official",
+      "family": "Stokes",
+      "given": [
+       "Tarsha"
+      ],
+      "prefix": [
+       "Mrs."
+      ]
+     },
+     {
+      "use": "maiden",
+      "family": "Davis",
+      "given": [
+       "Tarsha"
+      ],
+      "prefix": [
+       "Mrs."
+      ]
+     }
+    ],
+    "telecom": [
+     {
+      "system": "phone",
+      "value": "555-916-1241",
+      "use": "home"
+     }
+    ],
+    "gender": "female",
+    "birthDate": "1950-11-17",
+    "deceasedDateTime": "2017-01-13T11:51:55+00:00",
+    "address": [
+     {
+      "extension": [
+       {
+        "url": "http://hl7.org/fhir/StructureDefinition/geolocation",
+        "extension": [
+         {
+          "url": "latitude",
+          "valueDecimal": 42.33196
+         },
+         {
+          "url": "longitude",
+          "valueDecimal": -71.020173
+         }
+        ]
+       }
+      ],
+      "line": [
+       "1089 McKenzie Boulevard Suite 37"
+      ],
+      "city": "Boston",
+      "state": "Massachusetts",
+      "postalCode": "02108",
+      "country": "US"
+     }
+    ],
+    "maritalStatus": {
+     "coding": [
+      {
+       "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+       "code": "M",
+       "display": "M"
+      }
+     ],
+     "text": "M"
+    },
+    "multipleBirthBoolean": false,
+    "communication": [
+     {
+      "language": {
+       "coding": [
+        {
+         "system": "urn:ietf:bcp:47",
+         "code": "zh",
+         "display": "Chinese"
+        }
+       ],
+       "text": "Chinese"
+      }
+     }
+    ]
+   }
+  },
+  "Procedure": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "0fa1a88a-37ee-4f50-ac7a-e1d58b56cb04",
+    "meta": {
+     "lastUpdated": "2026-07-20T18:10:06.278-04:00"
+    },
+    "type": "searchset",
+    "total": 13,
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir/Procedure?_count=2&patient=8f65af92-c3c9-4316-bb7f-862c248788dd"
+     },
+     {
+      "relation": "next",
+      "url": "https://launch.smarthealthit.org/v/r4/fhir?_getpages=0fa1a88a-37ee-4f50-ac7a-e1d58b56cb04&_getpagesoffset=2&_count=2&_pretty=true&_bundletype=searchset"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Procedure/3934b3c4-3376-45f2-80ee-9aa4126fc5b3",
+      "resource": {
+       "resourceType": "Procedure",
+       "id": "3934b3c4-3376-45f2-80ee-9aa4126fc5b3",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:11:31.948-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "completed",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "428191000124101",
+          "display": "Documentation of current medications"
+         }
+        ],
+        "text": "Documentation of current medications"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/c20c4db6-c149-46cc-b6e5-d9dfd1e5188d"
+       },
+       "performedPeriod": {
+        "start": "2008-11-14T11:51:55+00:00",
+        "end": "2008-11-14T12:06:55+00:00"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     },
+     {
+      "fullUrl": "https://launch.smarthealthit.org/v/r4/fhir/Procedure/5f5a7ecf-feda-4032-8dc9-ae3f6d08b7fe",
+      "resource": {
+       "resourceType": "Procedure",
+       "id": "5f5a7ecf-feda-4032-8dc9-ae3f6d08b7fe",
+       "meta": {
+        "versionId": "4",
+        "lastUpdated": "2021-04-07T03:10:54.527-04:00",
+        "tag": [
+         {
+          "system": "https://smarthealthit.org/tags",
+          "code": "synthea-5-2019"
+         }
+        ]
+       },
+       "status": "completed",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "73761001",
+          "display": "Colonoscopy"
+         }
+        ],
+        "text": "Colonoscopy"
+       },
+       "subject": {
+        "reference": "Patient/8f65af92-c3c9-4316-bb7f-862c248788dd"
+       },
+       "encounter": {
+        "reference": "Encounter/560312cf-e525-4e23-93d0-3a8c3590ec44"
+       },
+       "performedPeriod": {
+        "start": "2007-03-11T11:51:55+00:00",
+        "end": "2007-03-11T12:32:55+00:00"
+       }
+      },
+      "search": {
+       "mode": "match"
+      },
+      "response": {
+       "status": "200 OK",
+       "etag": "W/\"4\""
+      }
+     }
+    ]
+   }
+  }
+ }
+}

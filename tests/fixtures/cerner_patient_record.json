@@ -1,0 +1,2216 @@
+{
+ "patientId": "12724066",
+ "responses": {
+  "AllergyIntolerance": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "56269f45-ce44-46d3-bc01-8abdbed85b77",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/AllergyIntolerance?patient=12724066&_count=2"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/AllergyIntolerance/12832701",
+      "resource": {
+       "resourceType": "AllergyIntolerance",
+       "id": "12832701",
+       "meta": {
+        "versionId": "14960443",
+        "lastUpdated": "2025-07-17T11:05:08Z"
+       },
+       "clinicalStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+          "code": "active",
+          "display": "Active"
+         }
+        ],
+        "text": "Active"
+       },
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+          "code": "confirmed",
+          "display": "Confirmed"
+         }
+        ],
+        "text": "Active"
+       },
+       "criticality": "unable-to-assess",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "111088007",
+          "display": "Latex (substance)"
+         }
+        ],
+        "text": "Latex"
+       },
+       "patient": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "onsetDateTime": "1900-01-01T00:00:00Z",
+       "recordedDate": "2023-04-07T18:11:29Z",
+       "recorder": {
+        "reference": "Practitioner/1",
+        "display": "SYSTEM, SYSTEM Cerner"
+       },
+       "note": [
+        {
+         "id": "14960445",
+         "authorReference": {
+          "reference": "Practitioner/1",
+          "display": "SYSTEM, SYSTEM Cerner"
+         },
+         "time": "2025-07-17T11:05:08Z",
+         "text": " Added via CheckinAsyst"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/AllergyIntolerance/12779159",
+      "resource": {
+       "resourceType": "AllergyIntolerance",
+       "id": "12779159",
+       "meta": {
+        "versionId": "12779159",
+        "lastUpdated": "2021-09-22T12:48:20Z"
+       },
+       "clinicalStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+          "code": "active",
+          "display": "Active"
+         }
+        ],
+        "text": "Proposed"
+       },
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+          "code": "unconfirmed",
+          "display": "Unconfirmed"
+         }
+        ],
+        "text": "Proposed"
+       },
+       "category": [
+        "medication"
+       ],
+       "criticality": "low",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "293675006",
+          "display": "Metoclopramide allergy (disorder)"
+         }
+        ],
+        "text": "Allergy to metoclopramide"
+       },
+       "patient": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "onsetDateTime": "2021-09-22T00:00:00Z",
+       "_onsetDateTime": {
+        "extension": [
+         {
+          "valueCodeableConcept": {
+           "coding": [
+            {
+             "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/25320",
+             "code": "639010",
+             "display": "About",
+             "userSelected": true
+            }
+           ],
+           "text": "About"
+          },
+          "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/precision"
+         }
+        ]
+       },
+       "recordedDate": "2021-09-22T12:48:20Z",
+       "recorder": {
+        "reference": "Practitioner/12742069",
+        "display": "Portal, Portal"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "Condition": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "6a0cf5e9-c7cb-4ea2-909c-5ea594ba4603",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Condition?patient=12724066&_count=2"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Condition/p73148061",
+      "resource": {
+       "resourceType": "Condition",
+       "id": "p73148061",
+       "meta": {
+        "versionId": "73153757",
+        "lastUpdated": "2021-03-23T10:52:04.000Z"
+       },
+       "clinicalStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+          "code": "resolved",
+          "display": "Resolved",
+          "userSelected": false
+         }
+        ],
+        "text": "Resolved"
+       },
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+          "code": "confirmed",
+          "display": "Confirmed",
+          "userSelected": false
+         }
+        ],
+        "text": "Confirmed"
+       },
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+           "code": "problem-list-item",
+           "display": "Problem List Item"
+          }
+         ],
+         "text": "Problem List Item"
+        },
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "74188005",
+           "display": "Medical (qualifier value)",
+           "userSelected": false
+          }
+         ],
+         "text": "Medical"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "420279001",
+          "display": "Renal disorder associated with type II diabetes mellitus (disorder)",
+          "userSelected": false
+         },
+         {
+          "system": "http://e-imo.com/products/problem-it",
+          "code": "1004936",
+          "display": "Type 2 diabetes mellitus with diabetic nephropathy",
+          "userSelected": false
+         },
+         {
+          "system": "http://snomed.info/sct",
+          "code": "44054006",
+          "display": "Diabetes mellitus type 2 (disorder)",
+          "userSelected": false
+         }
+        ],
+        "text": "Type 2 diabetes mellitus with diabetic nephropathy"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "abatementDateTime": "2021-03-23",
+       "recordedDate": "2021-02-23T12:28:06.000Z",
+       "recorder": {
+        "reference": "Practitioner/12742069",
+        "display": "Portal, Portal"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Condition/d2573126381",
+      "resource": {
+       "resourceType": "Condition",
+       "id": "d2573126381",
+       "meta": {
+        "versionId": "2573126991",
+        "lastUpdated": "2021-05-14T11:52:50.000Z"
+       },
+       "extension": [
+        {
+         "valueCodeableConcept": {
+          "coding": [
+           {
+            "system": "http://snomed.info/sct",
+            "code": "89100005",
+            "display": "Final diagnosis (discharge) (contextual qualifier) (qualifier value)",
+            "userSelected": false
+           }
+          ],
+          "text": "Discharge"
+         },
+         "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/diagnosis-type"
+        }
+       ],
+       "verificationStatus": {
+        "coding": [
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+          "code": "entered-in-error",
+          "display": "Entered in Error"
+         }
+        ],
+        "text": "Entered in Error"
+       },
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+           "code": "encounter-diagnosis",
+           "display": "Encounter Diagnosis"
+          }
+         ],
+         "text": "Encounter Diagnosis"
+        },
+        {
+         "coding": [
+          {
+           "system": "http://snomed.info/sct",
+           "code": "74188005",
+           "display": "Medical (qualifier value)",
+           "userSelected": false
+          }
+         ],
+         "text": "Medical"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "420279001",
+          "display": "Renal disorder associated with type II diabetes mellitus (disorder)",
+          "userSelected": false
+         },
+         {
+          "system": "http://e-imo.com/products/problem-it",
+          "code": "1004936",
+          "display": "Type 2 diabetes mellitus with diabetic nephropathy",
+          "userSelected": false
+         },
+         {
+          "system": "http://snomed.info/sct",
+          "code": "44054006",
+          "display": "Diabetes mellitus type 2 (disorder)",
+          "userSelected": false
+         }
+        ],
+        "text": "Type 2 diabetes mellitus with diabetic nephropathy"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97953477"
+       },
+       "onsetDateTime": "2021-05-11",
+       "recordedDate": "2021-05-11T07:07:36.000Z",
+       "recorder": {
+        "reference": "Practitioner/12742069",
+        "display": "Portal, Portal"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "DiagnosticReport": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "dfa46844-764a-41f2-ae32-1d7ddb422ae5",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/DiagnosticReport?patient=12724066&_count=2"
+     },
+     {
+      "relation": "next",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/DiagnosticReport?patient=12724066&_count=2&-pageContext=eJytjkkOgkAQRe9Sa0gQGxkSN-qGpeEApOgB1Lab9BAHwt1FN5K4lN1P5dd7fwCqvXJQxAEwLtDLKQ9AvbHaQAH7Ei_PuKx2t3MbJdVRHcotBNChrRW_T11nPA-gx5bXVCv3uYHIkmSVkThMU5aEhHMa5jkRoYg3TcNzERFcwxiAddMfqw2yk5a6fczVyks5FwmU9sf0Ln05FM0yoB5dtwTneqJGN_9MGl9ZVJNV&-pageDirection=NEXT"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/DiagnosticReport/206908407",
+      "resource": {
+       "resourceType": "DiagnosticReport",
+       "id": "206908407",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2024-09-26T12:26:22.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-206908407-2024092612262300"
+        }
+       ],
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://loinc.org",
+           "code": "LP75011-4",
+           "userSelected": false
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "21704910",
+          "display": "Potassium Level",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "2823-3",
+          "display": "Potassium [Moles/volume] in Serum or Plasma",
+          "userSelected": false
+         }
+        ],
+        "text": "Potassium Level"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97954225"
+       },
+       "effectivePeriod": {
+        "start": "2024-09-26T12:25:38.000Z",
+        "end": "2024-09-26T12:25:38.000Z"
+       },
+       "issued": "2024-09-26T12:26:22Z",
+       "performer": [
+        {
+         "reference": "Practitioner/1",
+         "display": "SYSTEM, SYSTEM Cerner"
+        }
+       ],
+       "resultsInterpreter": [
+        {
+         "reference": "Practitioner/1",
+         "display": "SYSTEM, SYSTEM Cerner"
+        }
+       ],
+       "presentedForm": [
+        {
+         "contentType": "text/plain",
+         "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Binary/R-206908407",
+         "title": "Scanner reading",
+         "creation": "2024-09-26T12:25:38.000Z"
+        },
+        {
+         "contentType": "application/xml",
+         "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Binary/XML-206908407",
+         "title": "Scanner reading",
+         "creation": "2024-09-26T12:25:38.000Z"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/DiagnosticReport/206819846",
+      "resource": {
+       "resourceType": "DiagnosticReport",
+       "id": "206819846",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2024-09-05T12:32:33.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-206819846-2024090512323400"
+        }
+       ],
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://loinc.org",
+           "code": "LP75011-4",
+           "userSelected": false
+          }
+         ]
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "21704910",
+          "display": "Potassium Level",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "2823-3",
+          "display": "Potassium [Moles/volume] in Serum or Plasma",
+          "userSelected": false
+         }
+        ],
+        "text": "Potassium Level"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97954225"
+       },
+       "effectivePeriod": {
+        "start": "2024-09-05T11:50:04.000Z",
+        "end": "2024-09-05T11:50:04.000Z"
+       },
+       "issued": "2024-09-05T12:32:33Z",
+       "performer": [
+        {
+         "reference": "Practitioner/1",
+         "display": "SYSTEM, SYSTEM Cerner"
+        }
+       ],
+       "resultsInterpreter": [
+        {
+         "reference": "Practitioner/1",
+         "display": "SYSTEM, SYSTEM Cerner"
+        }
+       ],
+       "presentedForm": [
+        {
+         "contentType": "text/plain",
+         "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Binary/R-206819846",
+         "title": "Scanner reading",
+         "creation": "2024-09-05T11:50:04.000Z"
+        },
+        {
+         "contentType": "application/xml",
+         "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Binary/XML-206819846",
+         "title": "Scanner reading",
+         "creation": "2024-09-05T11:50:04.000Z"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "Encounter": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "762e634c-f508-44fc-9347-64c53f46d2dc",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Encounter?patient=12724066&_count=2"
+     },
+     {
+      "relation": "next",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Encounter?patient=12724066&-pageContext=2cdea860-4092-4e05-be03-ea3dded5f4f2&-pageDirection=NEXT"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Encounter/97954262",
+      "resource": {
+       "resourceType": "Encounter",
+       "id": "97954262",
+       "meta": {
+        "versionId": "0",
+        "lastUpdated": "2020-08-06T15:21:28.000Z"
+       },
+       "identifier": [
+        {
+         "use": "usual",
+         "type": {
+          "coding": [
+           {
+            "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/319",
+            "code": "1077",
+            "display": "FIN NBR",
+            "userSelected": true
+           },
+           {
+            "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+            "code": "AN",
+            "display": "Account number",
+            "userSelected": false
+           }
+          ],
+          "text": "FIN NBR"
+         },
+         "system": "urn:oid:5.5.5.5.5.5.",
+         "value": "16133",
+         "period": {
+          "start": "2020-08-06T15:21:28.000Z"
+         }
+        }
+       ],
+       "status": "in-progress",
+       "class": {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code": "AMB",
+        "display": "ambulatory",
+        "userSelected": false
+       },
+       "type": [
+        {
+         "coding": [
+          {
+           "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/71",
+           "code": "309309",
+           "display": "Outpatient",
+           "userSelected": true
+          },
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/v2-0004",
+           "code": "O",
+           "display": "Outpatient",
+           "userSelected": false
+          }
+         ],
+         "text": "Outpatient"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "participant": [
+        {
+         "type": [
+          {
+           "coding": [
+            {
+             "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/333",
+             "code": "1121",
+             "display": "Consulting Physician",
+             "userSelected": true
+            },
+            {
+             "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+             "code": "CON",
+             "display": "consultant",
+             "userSelected": false
+            }
+           ],
+           "text": "Consulting Physician"
+          }
+         ],
+         "period": {
+          "start": "2022-07-13T07:16:27.000Z"
+         },
+         "individual": {
+          "reference": "Practitioner/12763797",
+          "display": "PWAmbry, MD, Cardio"
+         }
+        }
+       ],
+       "location": [
+        {
+         "location": {
+          "reference": "Location/31098367",
+          "display": "Model Behavioral Health Hospital"
+         },
+         "status": "active"
+        }
+       ],
+       "serviceProvider": {
+        "reference": "Organization/1054423",
+        "display": "Model Behavioral Health Hospital"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Encounter/97954294",
+      "resource": {
+       "resourceType": "Encounter",
+       "id": "97954294",
+       "meta": {
+        "versionId": "0",
+        "lastUpdated": "2020-08-10T15:49:27.000Z"
+       },
+       "identifier": [
+        {
+         "use": "usual",
+         "type": {
+          "coding": [
+           {
+            "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/319",
+            "code": "1077",
+            "display": "FIN NBR",
+            "userSelected": true
+           },
+           {
+            "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+            "code": "AN",
+            "display": "Account number",
+            "userSelected": false
+           }
+          ],
+          "text": "FIN NBR"
+         },
+         "system": "urn:oid:5.5.5.5.5.5.",
+         "value": "16135",
+         "period": {
+          "start": "2020-08-10T15:49:27.000Z"
+         }
+        }
+       ],
+       "status": "in-progress",
+       "class": {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code": "AMB",
+        "display": "ambulatory",
+        "userSelected": false
+       },
+       "type": [
+        {
+         "coding": [
+          {
+           "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/71",
+           "code": "309309",
+           "display": "Outpatient",
+           "userSelected": true
+          },
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/v2-0004",
+           "code": "O",
+           "display": "Outpatient",
+           "userSelected": false
+          }
+         ],
+         "text": "Outpatient"
+        }
+       ],
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "location": [
+        {
+         "location": {
+          "reference": "Location/21304872",
+          "display": "Model Clinic 1"
+         },
+         "status": "active"
+        }
+       ],
+       "serviceProvider": {
+        "reference": "Organization/685844",
+        "display": "Model Clinic 1"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "Immunization": {
+   "statusCode": 504,
+   "body": {
+    "code": 504,
+    "message": "Gateway Timeout"
+   }
+  },
+  "MedicationRequest": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "d0bd6ed3-386d-4c45-9c8f-8e8dc8087c7a",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/MedicationRequest?patient=12724066&_count=2"
+     },
+     {
+      "relation": "next",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/MedicationRequest?patient=12724066&_count=2&-pageContext=T3BlblBsYXRmb3JtRmhpckNvbnRleHQ9dHJ1ZSZwYWdlQ29udGV4dD04Nzc3NjAyNjdfODc3NzYwMjY4XzEyNzI0MDY2XzFfMSZjb25jZXB0PWNoYXJ0ZWQ%3D&-pageDirection=NEXT"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/MedicationRequest/332682525",
+      "resource": {
+       "resourceType": "MedicationRequest",
+       "id": "332682525",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2021-07-29T01:00:38Z"
+       },
+       "extension": [
+        {
+         "valueCodeableConcept": {
+          "text": "Needs pharmacy verification"
+         },
+         "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/pharmacy-verification-status"
+        }
+       ],
+       "status": "active",
+       "intent": "order",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/medicationrequest-category",
+           "code": "inpatient",
+           "display": "Inpatient",
+           "userSelected": false
+          }
+         ]
+        }
+       ],
+       "reportedBoolean": false,
+       "medicationCodeableConcept": {
+        "coding": [
+         {
+          "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+          "code": "1807627",
+          "display": "150 ML Sodium Chloride 9 MG/ML Injection",
+          "userSelected": false
+         },
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/synonym",
+          "code": "40284513",
+          "display": "NS drip 0.9 %",
+          "userSelected": true
+         }
+        ],
+        "text": "NS drip 0.9 %"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97953477"
+       },
+       "authoredOn": "2021-07-14T13:36:53Z",
+       "requester": {
+        "reference": "Practitioner/12744819",
+        "display": "Test, ASD Physcian 3"
+       },
+       "dosageInstruction": [
+        {
+         "extension": [
+          {
+           "valueString": "Total Volume (mL): 1,000, Soln-IV, IV, 200 mL/hr, Start Date: 07/14/21 8:36:00 CDT, Populate Charting Weight From Order",
+           "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/clinical-instruction"
+          }
+         ],
+         "text": "200 mL/hr, IV",
+         "patientInstruction": "200 Milliliters/hour Intravenous. Refills: 0.",
+         "timing": {
+          "repeat": {
+           "boundsPeriod": {
+            "start": "2021-07-14T13:36:00Z"
+           },
+           "duration": 5.0,
+           "durationUnit": "h"
+          }
+         },
+         "asNeededBoolean": false,
+         "route": {
+          "coding": [
+           {
+            "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4001",
+            "code": "318170",
+            "display": "IV",
+            "userSelected": true
+           },
+           {
+            "system": "http://snomed.info/sct",
+            "code": "47625008",
+            "display": "Intravenous route (qualifier value)",
+            "userSelected": false
+           }
+          ],
+          "text": "IV"
+         },
+         "doseAndRate": [
+          {
+           "doseQuantity": {
+            "value": 0.9,
+            "unit": "%",
+            "system": "http://unitsofmeasure.org",
+            "code": "%"
+           },
+           "rateQuantity": {
+            "value": 200.0,
+            "unit": "mL/hr",
+            "system": "http://unitsofmeasure.org",
+            "code": "mL/h"
+           }
+          }
+         ]
+        }
+       ],
+       "dispenseRequest": {
+        "extension": [
+         {
+          "valueBoolean": false,
+          "url": "http://electronichealth.se/fhir/StructureDefinition/NLLDosePackaging"
+         }
+        ],
+        "validityPeriod": {
+         "start": "2021-07-14T13:36:53Z"
+        }
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/MedicationRequest/313764715",
+      "resource": {
+       "resourceType": "MedicationRequest",
+       "id": "313764715",
+       "meta": {
+        "versionId": "3",
+        "lastUpdated": "2020-07-21T01:00:49Z"
+       },
+       "extension": [
+        {
+         "valueCodeableConcept": {
+          "text": "Does not need pharmacy verification"
+         },
+         "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/pharmacy-verification-status"
+        }
+       ],
+       "status": "active",
+       "intent": "order",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/medicationrequest-category",
+           "code": "inpatient",
+           "display": "Inpatient",
+           "userSelected": false
+          }
+         ]
+        }
+       ],
+       "reportedBoolean": false,
+       "medicationCodeableConcept": {
+        "coding": [
+         {
+          "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+          "code": "161",
+          "display": "Acetaminophen",
+          "userSelected": false
+         },
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/synonym",
+          "code": "2748023",
+          "display": "acetaminophen",
+          "userSelected": true
+         }
+        ],
+        "text": "acetaminophen"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97953477"
+       },
+       "authoredOn": "2020-07-06T21:00:38Z",
+       "requester": {
+        "reference": "Practitioner/2",
+        "display": "CERNER, CERNER CERNER"
+       },
+       "dosageInstruction": [
+        {
+         "extension": [
+          {
+           "valueString": "650 mg = 2 tab, Oral, Tab, every 4 hr, PRN other (see comment), First Dose: 07/06/20 16:00:00 CDT",
+           "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/clinical-instruction"
+          }
+         ],
+         "text": "650 mg = 2 tab, Oral, every 4 hr, PRN: other (see comment)",
+         "patientInstruction": "650 Milligrams Oral (given by mouth) every 4 hours as needed other (see comment). Refills: 0.",
+         "timing": {
+          "repeat": {
+           "boundsPeriod": {
+            "start": "2020-07-06T21:00:00Z"
+           }
+          },
+          "code": {
+           "coding": [
+            {
+             "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4003",
+             "code": "696547",
+             "display": "every 4 hr",
+             "userSelected": true
+            },
+            {
+             "system": "http://terminology.hl7.org/CodeSystem/v3-GTSAbbreviation",
+             "code": "Q4H",
+             "display": "Q4H",
+             "userSelected": false
+            },
+            {
+             "system": "http://snomed.info/sct",
+             "code": "225756002",
+             "display": "Every four hours (qualifier value)",
+             "userSelected": false
+            }
+           ],
+           "text": "every 4 hr"
+          }
+         },
+         "asNeededCodeableConcept": {
+          "coding": [
+           {
+            "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4005",
+            "code": "664916",
+            "display": "other (see comment)",
+            "userSelected": true
+           },
+           {
+            "system": "http://snomed.info/sct",
+            "code": "74964007",
+            "display": "Other (qualifier value)",
+            "userSelected": false
+           }
+          ],
+          "text": "other (see comment)"
+         },
+         "route": {
+          "coding": [
+           {
+            "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4001",
+            "code": "318185",
+            "display": "Oral",
+            "userSelected": true
+           },
+           {
+            "system": "http://snomed.info/sct",
+            "code": "26643006",
+            "display": "Oral route (qualifier value)",
+            "userSelected": false
+           }
+          ],
+          "text": "Oral"
+         },
+         "doseAndRate": [
+          {
+           "doseQuantity": {
+            "value": 650.0,
+            "unit": "mg",
+            "system": "http://unitsofmeasure.org",
+            "code": "mg"
+           }
+          }
+         ]
+        }
+       ],
+       "dispenseRequest": {
+        "extension": [
+         {
+          "valueBoolean": false,
+          "url": "http://electronichealth.se/fhir/StructureDefinition/NLLDosePackaging"
+         }
+        ],
+        "validityPeriod": {
+         "start": "2020-07-06T21:00:38Z"
+        }
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "ObservationLaboratory": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "e143724c-ccd6-4273-aa70-65c29c1f7344",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation?patient=12724066&category=laboratory&_count=2"
+     },
+     {
+      "relation": "next",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation?patient=12724066&category=laboratory&_count=2&-pageContext=eJxljcsKwjAQRf9ltiZg-m7Bja6LCz8gTNJJtYREmgSF0n-3uiq4u1zO4SygfXIRuozBQAaT3fYCOs3Bz9DB5Zq1Iutv59djLMrpUE_9CRjcMUhH742NcyIGTxxJau_i74NBG9PkVHGFwvCibI68RdNygYpI1XklFMLKIMTNG6RFtY-6ZO0-YdCGv8YXWtcPEic_dw%3D%3D&-pageDirection=NEXT"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation/L-209055165",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "L-209055165",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2026-06-26T05:36:02.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-209055165-2026062605360200"
+        }
+       ],
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "laboratory",
+           "display": "Laboratory",
+           "userSelected": false
+          }
+         ],
+         "text": "Laboratory"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "20004425",
+          "display": "Estimated Creatinine Clearance",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "35592-5",
+          "display": "Creatinine renal clearance/1.73 sq M.predicted by Cockcroft-Gault formula, BSA formula",
+          "userSelected": false
+         }
+        ],
+        "text": "Estimated Creatinine Clearance"
+       },
+       "subject": {
+        "reference": "Patient/12724066"
+       },
+       "encounter": {
+        "reference": "Encounter/97939518"
+       },
+       "effectiveDateTime": "2026-06-26T05:36:02.000Z",
+       "issued": "2026-06-26T05:36:02.000Z",
+       "performer": [
+        {
+         "extension": [
+          {
+           "valueCodeableConcept": {
+            "coding": [
+             {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "LA",
+              "display": "legal authenticator"
+             }
+            ],
+            "text": "legal authenticator"
+           },
+           "url": "http://hl7.org/fhir/StructureDefinition/event-performerFunction"
+          }
+         ],
+         "reference": "Practitioner/1"
+        }
+       ],
+       "valueQuantity": {
+        "value": 254.38,
+        "unit": "mL/min",
+        "system": "http://unitsofmeasure.org",
+        "code": "mL/min"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation/L-209051373",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "L-209051373",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2026-06-22T14:40:04.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-209051373-2026062214400500"
+        }
+       ],
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "laboratory",
+           "display": "Laboratory",
+           "userSelected": false
+          }
+         ],
+         "text": "Laboratory"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "20004425",
+          "display": "Estimated Creatinine Clearance",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "35592-5",
+          "display": "Creatinine renal clearance/1.73 sq M.predicted by Cockcroft-Gault formula, BSA formula",
+          "userSelected": false
+         }
+        ],
+        "text": "Estimated Creatinine Clearance"
+       },
+       "subject": {
+        "reference": "Patient/12724066"
+       },
+       "encounter": {
+        "reference": "Encounter/100402849"
+       },
+       "effectiveDateTime": "2026-06-22T14:40:04.000Z",
+       "issued": "2026-06-22T14:40:04.000Z",
+       "performer": [
+        {
+         "extension": [
+          {
+           "valueCodeableConcept": {
+            "coding": [
+             {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "LA",
+              "display": "legal authenticator"
+             }
+            ],
+            "text": "legal authenticator"
+           },
+           "url": "http://hl7.org/fhir/StructureDefinition/event-performerFunction"
+          }
+         ],
+         "reference": "Practitioner/1"
+        }
+       ],
+       "valueQuantity": {
+        "value": 254.38,
+        "unit": "mL/min",
+        "system": "http://unitsofmeasure.org",
+        "code": "mL/min"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "ObservationVitalSigns": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "44a047d7-084f-408a-a57c-02e087962390",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation?patient=12724066&category=vital-signs&_count=2"
+     },
+     {
+      "relation": "next",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation?patient=12724066&category=vital-signs&_count=2&-pageContext=eJxljbEKwjAURf_lrSaoIZZacKgKTsXBwTE8X5K2ElJpEhVK_93qVHC7XM7hDEBd8hEKwUAbi8lNewBKfeh6KOBwXmbiVF32r3sZ5LVcHKsdMGgwKG_eExv7ZBg8sDaKOh9_H5DeWi0lcW0tcmkz5CgE8cyuiW4bs8pzCSODECdPq2cb0anQ1j7M4z45N09ZdOGv9YXG8QNQ30MW&-pageDirection=NEXT"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation/VS-206402657",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "VS-206402657",
+       "meta": {
+        "versionId": "6",
+        "lastUpdated": "2026-07-17T10:59:21.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-206402657-2024040523471000"
+        }
+       ],
+       "status": "corrected",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "vital-signs",
+           "display": "Vital Signs"
+          }
+         ],
+         "text": "Vital Signs"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "703558",
+          "display": "Temperature Oral",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "8310-5",
+          "display": "Body temperature"
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "8331-1",
+          "display": "Oral temperature"
+         }
+        ],
+        "text": "Temperature Oral"
+       },
+       "subject": {
+        "reference": "Patient/12724066"
+       },
+       "encounter": {
+        "reference": "Encounter/98051649"
+       },
+       "effectiveDateTime": "2099-07-07T21:12:00.000Z",
+       "issued": "2099-07-07T21:12:00.000Z",
+       "performer": [
+        {
+         "extension": [
+          {
+           "valueCodeableConcept": {
+            "coding": [
+             {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "LA",
+              "display": "legal authenticator"
+             }
+            ],
+            "text": "legal authenticator"
+           },
+           "url": "http://hl7.org/fhir/StructureDefinition/event-performerFunction"
+          }
+         ],
+         "reference": "Practitioner/12742069"
+        }
+       ],
+       "valueQuantity": {
+        "extension": [
+         {
+          "valueQuantity": {
+           "value": 87.8,
+           "unit": "degF",
+           "system": "http://unitsofmeasure.org",
+           "code": "[degF]"
+          },
+          "url": "http://hl7.org/fhir/StructureDefinition/iso21090-PQ-translation"
+         }
+        ],
+        "value": 31.0,
+        "unit": "degC",
+        "system": "http://unitsofmeasure.org",
+        "code": "Cel"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Observation/VS-209075567",
+      "resource": {
+       "resourceType": "Observation",
+       "id": "VS-209075567",
+       "meta": {
+        "versionId": "1",
+        "lastUpdated": "2026-07-20T14:52:49.000Z"
+       },
+       "identifier": [
+        {
+         "system": "https://fhir.cerner.com/ceuuid",
+         "value": "CE87caf4b7-9397-4667-9897-702218017c9e-209075567-2026072014524900"
+        }
+       ],
+       "status": "final",
+       "category": [
+        {
+         "coding": [
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+           "code": "vital-signs",
+           "display": "Vital Signs"
+          }
+         ],
+         "text": "Vital Signs"
+        }
+       ],
+       "code": {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/72",
+          "code": "703558",
+          "display": "Temperature Oral",
+          "userSelected": true
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "8310-5",
+          "display": "Body temperature"
+         },
+         {
+          "system": "http://loinc.org",
+          "code": "8331-1",
+          "display": "Oral temperature"
+         }
+        ],
+        "text": "Temperature Oral"
+       },
+       "subject": {
+        "reference": "Patient/12724066"
+       },
+       "encounter": {
+        "reference": "Encounter/100431331"
+       },
+       "effectiveDateTime": "2026-07-20T14:50:00.000Z",
+       "issued": "2026-07-20T14:51:21.000Z",
+       "performer": [
+        {
+         "extension": [
+          {
+           "valueCodeableConcept": {
+            "coding": [
+             {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "LA",
+              "display": "legal authenticator"
+             }
+            ],
+            "text": "legal authenticator"
+           },
+           "url": "http://hl7.org/fhir/StructureDefinition/event-performerFunction"
+          }
+         ],
+         "reference": "Practitioner/12742069"
+        }
+       ],
+       "valueQuantity": {
+        "extension": [
+         {
+          "valueQuantity": {
+           "value": 98.6,
+           "unit": "degF",
+           "system": "http://unitsofmeasure.org",
+           "code": "[degF]"
+          },
+          "url": "http://hl7.org/fhir/StructureDefinition/iso21090-PQ-translation"
+         }
+        ],
+        "value": 37,
+        "unit": "degC",
+        "system": "http://unitsofmeasure.org",
+        "code": "Cel"
+       }
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  },
+  "Patient": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Patient",
+    "id": "12724066",
+    "meta": {
+     "versionId": "1873",
+     "lastUpdated": "2026-07-07T15:55:11.000Z"
+    },
+    "extension": [
+     {
+      "id": "491151788",
+      "extension": [
+       {
+        "valueCodeableConcept": {
+         "coding": [
+          {
+           "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4640016",
+           "code": "2572136737",
+           "display": "Clinical Communications",
+           "userSelected": true
+          },
+          {
+           "system": "http://terminology.hl7.org/CodeSystem/communication-topic",
+           "code": "progress-update",
+           "display": "Progress Update",
+           "userSelected": false
+          }
+         ],
+         "text": "Clinical Communications"
+        },
+        "url": "communication-type"
+       }
+      ],
+      "url": "https://fhir-ehr.cerner.com/r4/StructureDefinition/communication-preference"
+     }
+    ],
+    "identifier": [
+     {
+      "id": "CI-490268794-0",
+      "use": "usual",
+      "type": {
+       "coding": [
+        {
+         "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/4",
+         "code": "2",
+         "display": "Community Medical Record Number",
+         "userSelected": true
+        },
+        {
+         "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+         "code": "MR",
+         "display": "Medical record number",
+         "userSelected": false
+        }
+       ],
+       "text": "Community Medical Record Number"
+      },
+      "system": "urn:oid:2.16.840.1.113883.3.787.0.0",
+      "value": "6000031",
+      "_value": {
+       "extension": [
+        {
+         "valueString": "6000031",
+         "url": "http://hl7.org/fhir/StructureDefinition/rendered-value"
+        }
+       ]
+      }
+     }
+    ],
+    "active": true,
+    "name": [
+     {
+      "id": "CI-12724066-0",
+      "use": "official",
+      "text": "SMARTS SR., NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "SR."
+      ],
+      "period": {
+       "start": "2019-12-26T15:12:34.000Z"
+      }
+     },
+     {
+      "id": "CI-498204372-0",
+      "use": "old",
+      "text": "SMARTS Sr., NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "Sr."
+      ],
+      "period": {
+       "start": "2025-01-13T06:41:07.000Z",
+       "end": "2025-06-23T10:13:56.000Z"
+      }
+     },
+     {
+      "id": "CI-494825395-1",
+      "use": "old",
+      "text": "SMARTS Jr., NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "Jr."
+      ],
+      "period": {
+       "start": "2025-01-07T05:21:57.000Z",
+       "end": "2025-01-13T06:41:07.000Z"
+      }
+     },
+     {
+      "id": "CI-494771493-2",
+      "use": "old",
+      "text": "SMARTS IV, NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "IV"
+      ],
+      "period": {
+       "start": "2025-01-06T05:03:59.000Z",
+       "end": "2025-01-07T05:21:57.000Z"
+      }
+     },
+     {
+      "id": "CI-494763389-3",
+      "use": "old",
+      "text": "SMARTS III, NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "III"
+      ],
+      "period": {
+       "start": "2025-01-03T20:06:56.000Z",
+       "end": "2025-01-06T05:03:59.000Z"
+      }
+     },
+     {
+      "id": "CI-494759234-4",
+      "use": "old",
+      "text": "SMARTS II, NANCYS II",
+      "family": "SMARTS",
+      "given": [
+       "NANCYS",
+       "II"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2024-08-22T13:46:46.000Z",
+       "end": "2025-01-03T20:06:56.000Z"
+      }
+     },
+     {
+      "id": "CI-494087165-5",
+      "use": "old",
+      "text": "SMART II, NANCY II",
+      "family": "SMART",
+      "given": [
+       "NANCY",
+       "II"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2024-08-22T13:40:23.000Z",
+       "end": "2024-08-22T13:46:46.000Z"
+      }
+     },
+     {
+      "id": "CI-494087140-6",
+      "use": "old",
+      "text": "SMART II, NANCY",
+      "family": "SMART",
+      "given": [
+       "NANCY"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2023-10-09T20:18:57.000Z",
+       "end": "2024-08-22T13:40:23.000Z"
+      }
+     },
+     {
+      "id": "CI-491917821-7",
+      "use": "old",
+      "text": "Smart II, Nancy",
+      "family": "Smart",
+      "given": [
+       "Nancy"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2023-08-01T16:08:56.000Z",
+       "end": "2023-10-09T20:18:57.000Z"
+      }
+     },
+     {
+      "id": "CI-491764296-8",
+      "use": "old",
+      "text": "Smart II, Nancyu Nha Eeeeee",
+      "family": "Smart",
+      "given": [
+       "Nancyu",
+       "Nha Eeeeee"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2023-05-24T19:01:51.000Z",
+       "end": "2023-08-01T16:08:56.000Z"
+      }
+     },
+     {
+      "id": "CI-491579041-9",
+      "use": "old",
+      "text": "SMART II, NANCYU NHA EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "NHA EEEEEE"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2023-03-17T06:36:18.000Z",
+       "end": "2023-05-24T19:01:51.000Z"
+      }
+     },
+     {
+      "id": "CI-491421528-10",
+      "use": "old",
+      "text": "SMART III, NANCYU NHA EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "NHA EEEEEE"
+      ],
+      "suffix": [
+       "III"
+      ],
+      "period": {
+       "start": "2023-03-15T07:18:47.000Z",
+       "end": "2023-03-17T06:36:18.000Z"
+      }
+     },
+     {
+      "id": "CI-491392778-11",
+      "use": "old",
+      "text": "SMART II, NANCYU NHA EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "NHA EEEEEE"
+      ],
+      "suffix": [
+       "II"
+      ],
+      "period": {
+       "start": "2023-03-15T07:01:33.000Z",
+       "end": "2023-03-15T07:18:47.000Z"
+      }
+     },
+     {
+      "id": "CI-491392749-12",
+      "use": "old",
+      "text": "SMART, NANCYU NHA EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "NHA EEEEEE"
+      ],
+      "period": {
+       "start": "2023-02-21T18:24:36.000Z",
+       "end": "2023-03-15T07:01:33.000Z"
+      }
+     },
+     {
+      "id": "CI-491320336-13",
+      "use": "old",
+      "text": "Smart, Nancyu Nha Eeeeee",
+      "family": "Smart",
+      "given": [
+       "Nancyu",
+       "Nha Eeeeee"
+      ],
+      "period": {
+       "start": "2022-11-28T19:25:43.000Z",
+       "end": "2023-02-21T18:24:36.000Z"
+      }
+     },
+     {
+      "id": "CI-491171484-14",
+      "use": "old",
+      "text": "SMART, NANCYU NHA EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "NHA EEEEEE"
+      ],
+      "period": {
+       "start": "2022-10-14T13:58:38.000Z",
+       "end": "2022-11-28T19:25:43.000Z"
+      }
+     },
+     {
+      "id": "CI-491088082-15",
+      "use": "old",
+      "text": "Smart, Nancyu Nha Eeeeee",
+      "family": "Smart",
+      "given": [
+       "Nancyu",
+       "Nha Eeeeee"
+      ],
+      "period": {
+       "start": "2022-10-05T18:18:35.000Z",
+       "end": "2022-10-14T13:58:38.000Z"
+      }
+     },
+     {
+      "id": "CI-491073957-16",
+      "use": "old",
+      "text": "SMART, NANCYU Nha EEEEEE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "Nha EEEEEE"
+      ],
+      "period": {
+       "start": "2022-08-04T03:51:15.000Z",
+       "end": "2022-10-05T18:18:35.000Z"
+      }
+     },
+     {
+      "id": "CI-490994647-17",
+      "use": "old",
+      "text": "SMART, NANCYU Nha EE",
+      "family": "SMART",
+      "given": [
+       "NANCYU",
+       "Nha EE"
+      ],
+      "period": {
+       "start": "2022-08-04T03:48:10.000Z",
+       "end": "2022-08-04T03:51:15.000Z"
+      }
+     },
+     {
+      "id": "CI-490994642-18",
+      "use": "old",
+      "text": "SMART, NANCYU",
+      "family": "SMART",
+      "given": [
+       "NANCYU"
+      ],
+      "period": {
+       "start": "2021-09-08T07:58:58.000Z",
+       "end": "2022-08-04T03:48:10.000Z"
+      }
+     },
+     {
+      "id": "CI-490409757-19",
+      "use": "old",
+      "text": "SMART, NANCYU\\u0000",
+      "family": "SMART",
+      "given": [
+       "NANCYU\\u0000"
+      ],
+      "period": {
+       "start": "2021-09-08T07:41:12.000Z",
+       "end": "2021-09-08T07:58:58.000Z"
+      }
+     },
+     {
+      "id": "CI-490409752-20",
+      "use": "old",
+      "text": "SMART, NANCYU",
+      "family": "SMART",
+      "given": [
+       "NANCYU"
+      ],
+      "period": {
+       "start": "2021-09-07T15:46:57.000Z",
+       "end": "2021-09-08T07:41:12.000Z"
+      }
+     },
+     {
+      "id": "CI-490405878-21",
+      "use": "old",
+      "text": "SMART, NANCY",
+      "family": "SMART",
+      "given": [
+       "NANCY"
+      ],
+      "period": {
+       "start": "2019-12-26T15:12:34.000Z",
+       "end": "2021-09-07T15:46:57.000Z"
+      }
+     },
+     {
+      "id": "CI-490080292-22",
+      "use": "old",
+      "text": "SMART, NANCY",
+      "family": "SMART",
+      "given": [
+       "NANCY"
+      ],
+      "period": {
+       "start": "2019-12-26T15:12:34.000Z",
+       "end": "2019-12-26T15:12:34.000Z"
+      }
+     }
+    ],
+    "telecom": [
+     {
+      "id": "CI-PH-30064445-0",
+      "extension": [
+       {
+        "valueUrl": "555-TEST-5877",
+        "url": "http://hl7.org/fhir/StructureDefinition/iso21090-TEL-address"
+       }
+      ],
+      "system": "phone",
+      "value": "555-TEST-5877",
+      "use": "temp",
+      "rank": 1,
+      "period": {
+       "start": "2023-10-09T20:18:57.000Z"
+      }
+     }
+    ],
+    "gender": "female",
+    "birthDate": "1990-01-02",
+    "deceasedBoolean": false,
+    "address": [
+     {
+      "id": "CI-24526435-0",
+      "use": "home",
+      "text": "55 FRUIT STREET11\nBOSTON, DC 02114\nUS",
+      "line": [
+       "55 FRUIT STREET11"
+      ],
+      "city": "BOSTON",
+      "state": "DC",
+      "postalCode": "02114",
+      "country": "US",
+      "period": {
+       "start": "2023-04-25T17:18:18.000Z"
+      }
+     }
+    ],
+    "maritalStatus": {
+     "coding": [
+      {
+       "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/38",
+       "code": "309239",
+       "display": "Single",
+       "userSelected": true
+      },
+      {
+       "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+       "code": "S",
+       "display": "Never Married",
+       "userSelected": false
+      }
+     ],
+     "text": "Single"
+    },
+    "contact": [
+     {
+      "extension": [
+       {
+        "valueReference": {
+         "reference": "RelatedPerson/14841377-12724066"
+        },
+        "url": "http://hl7.org/fhir/StructureDefinition/patient-relatedPerson"
+       }
+      ],
+      "relationship": [
+       {
+        "coding": [
+         {
+          "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/351",
+          "code": "1152",
+          "display": "Emergency Contact",
+          "userSelected": true
+         },
+         {
+          "system": "http://terminology.hl7.org/CodeSystem/v2-0131",
+          "code": "C",
+          "display": "Emergency Contact",
+          "userSelected": false
+         }
+        ],
+        "text": "Emergency Contact"
+       }
+      ],
+      "name": {
+       "id": "CI-14841377-0",
+       "use": "official",
+       "text": "Jdoe, Johny Smith"
+      },
+      "period": {
+       "start": "2025-07-18T05:55:42.000Z"
+      }
+     }
+    ],
+    "communication": [
+     {
+      "language": {
+       "coding": [
+        {
+         "system": "https://fhir.cerner.com/ec2458f2-1e24-41c8-b71b-0e701af7583d/codeSet/36",
+         "code": "151",
+         "display": "English",
+         "userSelected": true
+        },
+        {
+         "system": "urn:ietf:bcp:47",
+         "code": "en",
+         "display": "English",
+         "userSelected": false
+        }
+       ],
+       "text": "English"
+      },
+      "preferred": true
+     }
+    ],
+    "generalPractitioner": [
+     {
+      "id": "CI-499786360-1",
+      "reference": "Practitioner/14903378",
+      "display": "sarkar MD Dr kumar pappu"
+     }
+    ]
+   }
+  },
+  "Procedure": {
+   "statusCode": 200,
+   "body": {
+    "resourceType": "Bundle",
+    "id": "6589dba2-e415-47d4-8117-899519f47936",
+    "type": "searchset",
+    "link": [
+     {
+      "relation": "self",
+      "url": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Procedure?patient=12724066&_count=2"
+     }
+    ],
+    "entry": [
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Procedure/2574524413",
+      "resource": {
+       "resourceType": "Procedure",
+       "id": "2574524413",
+       "meta": {
+        "versionId": "0",
+        "lastUpdated": "2022-05-07T07:57:20Z"
+       },
+       "status": "completed",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "119954001",
+          "display": "Adenoid excision (procedure)",
+          "userSelected": true
+         }
+        ],
+        "text": "&^%&^%&^%"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97953477"
+       },
+       "performedPeriod": {
+        "start": "2021-10-14T13:13:20Z",
+        "end": "2021-10-14T13:13:20Z"
+       },
+       "recorder": {
+        "reference": "Practitioner/1",
+        "display": "SYSTEM, SYSTEM Cerner"
+       },
+       "performer": [
+        {
+         "actor": {
+          "reference": "Practitioner/4122630",
+          "display": "Cerner Test, Physician - Women's Health Cerner"
+         }
+        }
+       ],
+       "location": {
+        "reference": "Location/21250409",
+        "display": "MX Hospital"
+       },
+       "note": [
+        {
+         "authorReference": {
+          "reference": "Practitioner/1",
+          "display": "SYSTEM, SYSTEM Cerner"
+         },
+         "time": "2022-05-07T07:57:21Z",
+         "text": "dat test comment note"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      }
+     },
+     {
+      "fullUrl": "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d/Procedure/2574634201",
+      "resource": {
+       "resourceType": "Procedure",
+       "id": "2574634201",
+       "meta": {
+        "versionId": "0",
+        "lastUpdated": "2022-06-14T03:23:40Z"
+       },
+       "status": "completed",
+       "code": {
+        "coding": [
+         {
+          "system": "http://snomed.info/sct",
+          "code": "119954001",
+          "display": "Adenoid excision (procedure)",
+          "userSelected": true
+         }
+        ],
+        "text": "&^%&^%&^%.   UIIU"
+       },
+       "subject": {
+        "reference": "Patient/12724066",
+        "display": "SMARTS SR., NANCYS II"
+       },
+       "encounter": {
+        "reference": "Encounter/97953477"
+       },
+       "performedDateTime": "2022-06-10T05:00:00Z",
+       "recorder": {
+        "reference": "Practitioner/1",
+        "display": "SYSTEM, SYSTEM Cerner"
+       },
+       "performer": [
+        {
+         "actor": {
+          "reference": "Practitioner/4122630",
+          "display": "Cerner Test, Physician - Women's Health Cerner"
+         }
+        }
+       ],
+       "location": {
+        "reference": "Location/21250409",
+        "display": "MX Hospital"
+       },
+       "note": [
+        {
+         "authorReference": {
+          "reference": "Practitioner/1",
+          "display": "SYSTEM, SYSTEM Cerner"
+         },
+         "time": "2022-06-14T03:23:41Z",
+         "text": "&*^&&te"
+        }
+       ]
+      },
+      "search": {
+       "mode": "match"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

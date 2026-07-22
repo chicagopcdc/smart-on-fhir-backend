@@ -19,6 +19,7 @@ alembic = "^1.18.4"
 cryptography = "^48.0.0"
 pydantic-settings = "^2.14.1"
 slowapi = "^0.1.10"
+fhir-resources = "^8.3.0"
 
 [build-system]
 requires = ["poetry-core"]
