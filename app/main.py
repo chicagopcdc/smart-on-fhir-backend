@@ -13,7 +13,7 @@ import secrets
 import httpx
 
 from app.providers import config, lantern
-from app.fhir import service
+from app.fhir import normalize, service
 
 from contextlib import asynccontextmanager
 from fastapi import Query
@@ -40,6 +40,9 @@ from app.core.config import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Build the FHIR model classes now so the first read is not the one that pays
+    # for it on the event loop.
+    normalize.warm_model_cache()
     yield
     await engine.dispose()
 
@@ -306,7 +309,19 @@ async def get_all_resource(
     resources = await service.fetch_fhir_resources(
         token_row.access_token, token_row.iss, app_session.patient_fhir_id, tier=include
     )
-    return JSONResponse(resources)
+
+    # Keyed by fetch config row, so the two Observation searches stay separate.
+    # The request context (tier, patient, provider) travels alongside so a caller
+    # need not remember what it asked for to read a partial record.
+    return JSONResponse(
+        {
+            "include": include.value,
+            "patient": app_session.patient_fhir_id,
+            "provider": app_session.provider,
+            "iss": app_session.iss,
+            "resources": resources,
+        }
+    )
 
 
 # Maximum allowed number of rows per page in the response

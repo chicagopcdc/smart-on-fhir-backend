@@ -57,6 +57,74 @@ it as a bearer token — `GET /fhir_resources` with header
 the endpoint does not accept a patient id from the caller: a caller can only reach
 the patient they authenticated as.
 
+#### How much of the record
+
+`?include=us-core` (the default) reads the resources a certified server must
+support. `?include=all` adds every other type in `RESOURCE_FETCH_CONFIG`.
+
+`all` is a diagnostic affordance rather than something a client should read on a
+patient's behalf. Several rows in the long tail are not scoped to a patient
+(`Practitioner`, `Organization`, `ValueSet`, `Substance`, `Schedule`, `Slot`), so
+they ask a server for its whole directory and return nothing about the person who
+authorized the read.
+
+A type is in the default set only if it is a USCDI v3 data class, is scoped to the
+authorized patient, and is useful without a second fetch. The rules are spelled out
+above `US_CORE_RESOURCES` in `app/providers/config.py`, and a name there that
+matches no fetch config row fails at startup.
+
+#### What comes back
+
+Responses are normalized (`app/fhir/normalize.py`), so a resource type has the
+same shape whichever server it came from. Each resource is validated against the
+`fhir.resources` R4B models one at a time: one that will not parse is skipped with
+a logged warning and counted in `skipped`, rather than costing the whole read.
+
+```jsonc
+{
+  "include": "us-core",
+  "patient": "erXuFYUfucBZaryVksYEcMg3",
+  "provider": "EPIC_SANDBOX",
+  "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+  "resources": {
+    "Condition": {
+      "resourceType": "Condition",
+      "status": "ok",         // "error" if the read failed or was not FHIR; keys never change
+      "statusCode": 200,
+      "count": 2,             // entries on this page
+      "total": 17,            // what the server says it holds, null where it does not say
+      "truncated": true,      // there is a next page
+      "skipped": 0,           // resources that would not parse
+      "error": null,
+      "entries": [
+        {
+          "id": "62cf4e59",
+          "resourceType": "Condition",
+          "title": "Hyperlipidemia",
+          "code": { "system": "http://snomed.info/sct", "code": "55822004", "display": "..." },
+          "status": "active",
+          "date": "2010-03-14",
+          "category": "problem-list-item",
+          "detail": { "verificationStatus": "confirmed", "severity": null, "abatement": null },
+          "resource": { /* the full validated FHIR resource, nulls dropped */ }
+        }
+      ]
+    }
+  }
+}
+```
+
+`resources` is keyed by fetch config row rather than by FHIR type, so the vital
+signs and laboratory searches keep their own buckets while both hold `Observation`
+entries. `title`, `code`, `status`, `date` and `category` mean the same thing for
+every type; `detail` is what differs between them. An Observation's is
+`{value, unit, components, interpretation, referenceRange}`, where a panel such as
+a blood pressure carries its numbers in `components` and no `value` of its own.
+The full resource travels with each summary, so nothing the server sent is lost.
+
+One page per resource type is read. `total` and `truncated` report that rather than
+presenting a partial list as a whole one.
+
 ## Prerequisites
 
 - Python 3.10 or newer
