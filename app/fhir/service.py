@@ -53,10 +53,10 @@ async def fetch_single_resource(client, url, params, headers, resource_type):
         }
 
 
-async def fetch_fhir_resources(access_token, base_url, fhir_patient_id):
+async def fetch_fhir_resources(access_token, base_url, fhir_patient_id, tier):
     epic_fhir_base_url = base_url
 
-    resource_types = config.RESOURCE_FETCH_CONFIG
+    resource_types = config.resources_for(tier)
 
     headers = {
         "Authorization": f"Bearer {access_token}",

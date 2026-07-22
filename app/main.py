@@ -276,6 +276,11 @@ async def handle_callback(
 @limiter.limit(lambda: get_settings().fhir_rate_limit)
 async def get_all_resource(
     request: Request,
+    include: config.ResourceTier = Query(
+        config.ResourceTier.US_CORE,
+        description="Which slice of the record to read: the US Core set a certified "
+        "server must support, or every configured resource type",
+    ),
     app_session: AppSession = Depends(get_current_session),
     session: AsyncSession = Depends(get_session),
 ):
@@ -299,7 +304,7 @@ async def get_all_resource(
     # The access token is read from storage (decrypted by the ORM) rather than
     # taken from the URL, so a bearer token never travels as a query parameter.
     resources = await service.fetch_fhir_resources(
-        token_row.access_token, token_row.iss, app_session.patient_fhir_id
+        token_row.access_token, token_row.iss, app_session.patient_fhir_id, tier=include
     )
     return JSONResponse(resources)
 
