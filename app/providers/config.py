@@ -1,3 +1,5 @@
+from enum import Enum
+
 from app.core.config import get_settings
 
 _settings = get_settings()
@@ -164,7 +166,6 @@ RESOURCE_FETCH_CONFIG = {
     "Media": {"url_template": "/Media", "needs_patient_param": True},
     "Medication": {"url_template": "/Medication", "needs_patient_param": True},
     "MedicationDispense": {"url_template": "/MedicationDispense", "needs_patient_param": True},
-    "MedicationOrder": {"url_template": "/MedicationOrder", "needs_patient_param": True},
     "MedicationRequest": {"url_template": "/MedicationRequest", "needs_patient_param": True},
     "MedicationStatement": {"url_template": "/MedicationStatement", "needs_patient_param": True},
     "NutritionOrder": {"url_template": "/NutritionOrder", "needs_patient_param": True},
@@ -182,7 +183,6 @@ RESOURCE_FETCH_CONFIG = {
     "Practitioner": {"url_template": "/Practitioner", "needs_patient_param": False},
     "PractitionerRole": {"url_template": "/PractitionerRole", "needs_patient_param": False},
     "Procedure": {"url_template": "/Procedure", "needs_patient_param": True},
-    "ProcedureRequest": {"url_template": "/ProcedureRequest", "needs_patient_param": True},
     "Provenance": {"url_template": "/Provenance", "needs_patient_param": True},
     "Questionnaire": {"url_template": "/Questionnaire", "needs_patient_param": False},
     "QuestionnaireResponse": {"url_template": "/QuestionnaireResponse", "needs_patient_param": True},
@@ -197,3 +197,86 @@ RESOURCE_FETCH_CONFIG = {
     "Task": {"url_template": "/Task", "needs_patient_param": True},
     "ValueSet": {"url_template": "/ValueSet", "needs_patient_param": False},
 }
+
+
+# The resources a read fetches by default. Everything else in
+# RESOURCE_FETCH_CONFIG stays reachable through ?include=all.
+#
+# Since 1 January 2026 an EHR certified under ONC's §170.315(g)(10) criterion
+# must expose USCDI v3 through FHIR US Core 6.1.0, so the US Core "must support"
+# set is the data any certified server is obliged to return. That makes it the
+# right default, but it is still 30-odd profiles, so a name earns a place here
+# only if all three hold:
+#
+#   1. It is a USCDI v3 data class, so every certified server will have it.
+#   2. It is scoped to the authorized patient, so the search is bounded. (A bare
+#      /Practitioner or /Organization asks the server for its whole directory.)
+#   3. It is useful on its own — its clinical content is inline rather than
+#      behind a second fetch.
+#
+# Encounter qualifies and is included: it dates and gives context to every other
+# resource, which is what a longitudinal reader needs. DocumentReference fails
+# (3) — a server returns note metadata with a Binary link, so without a Binary
+# retrieval path it is a pointer we cannot resolve.
+US_CORE_RESOURCES = frozenset(
+    {
+        "Patient",
+        "AllergyIntolerance",
+        "Condition",
+        "DiagnosticReport",
+        "Encounter",
+        "Immunization",
+        "MedicationRequest",
+        "ObservationVitalSigns",
+        "ObservationLaboratory",
+        "Procedure",
+    }
+)
+
+
+def validate_us_core_membership(names: frozenset[str], configs: dict) -> None:
+    """Fail fast if the default tier names a resource the fetch config does not have.
+
+    Every name in ``US_CORE_RESOURCES`` selects a row from ``RESOURCE_FETCH_CONFIG``.
+    A typo would match nothing and silently drop that resource from every default
+    read, a gap that surfaces only as missing data much later, so it is caught at
+    import instead.
+    """
+    unknown = sorted(names - configs.keys())
+    if unknown:
+        raise ValueError(
+            f"US_CORE_RESOURCES names resources missing from RESOURCE_FETCH_CONFIG: {unknown}"
+        )
+
+
+validate_us_core_membership(US_CORE_RESOURCES, RESOURCE_FETCH_CONFIG)
+
+
+class ResourceTier(str, Enum):
+    """How much of a patient's record a read should cover.
+
+    Subclassing ``str`` (rather than ``StrEnum``, which needs 3.11) keeps the
+    package's declared 3.10 floor and lets FastAPI validate the query parameter
+    against the members, so an unknown tier is a 422 rather than a silent
+    fallback to the default.
+    """
+
+    US_CORE = "us-core"
+    ALL = "all"
+
+
+def fhir_type_for(entry: dict) -> str:
+    """The FHIR resource type a fetch config row targets.
+
+    Read from the URL rather than declared alongside it, so the two cannot drift.
+    It is what names a result that came back empty, and it is not always the row's
+    key: the Observation searches are split by category, so ``ObservationLaboratory``
+    fetches ``Observation``.
+    """
+    return entry["url_template"].strip("/").split("/", 1)[0]
+
+
+def resources_for(tier: ResourceTier) -> dict:
+    """The fetch config rows a read should cover for the requested tier."""
+    wanted = RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
+    return {name: entry for name, entry in RESOURCE_FETCH_CONFIG.items() if name in wanted}

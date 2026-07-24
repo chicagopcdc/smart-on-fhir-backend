@@ -1,71 +1,79 @@
 import httpx
 import asyncio
+from app.fhir import normalize
 from app.providers import config
 
 
 
-async def fetch_single_resource(client, url, params, headers, resource_type):
+async def fetch_single_resource(client, url, params, headers):
+    """Fetch one FHIR search or resource, as a uniform result dict.
+
+    Returns ``{success, status_code, data, error}``. ``status_code`` is None only
+    when nothing arrived at all (timeout, DNS, refused); a non-200 or a 200 that
+    is not JSON keeps the status it came with and reports the body as ``error``.
     """
-    Fetch a single FHIR resource type for the patient.
-
-    Args:
-        client (httpx.AsyncClient): The async HTTP client to use.
-        url (str): The relative URL path to query.
-        params (dict): Query parameters (e.g., patient ID, extra filters).
-        headers (dict): Headers including Authorization.
-        resource_type (str): The resource type name (for logging).
-
-    Returns:
-        dict: {
-            "resource_type": str,
-            "success": bool,
-            "status_code": int,
-            "data": dict or None,
-            "error": str or None
+    def result(success, status_code, data=None, error=None):
+        return {
+            "success": success,
+            "status_code": status_code,
+            "data": data,
+            "error": error,
         }
-    """
+
     try:
         response = await client.get(url, params=params, headers=headers)
-        
-        if response.status_code == 200:
-            return {
-                "resource_type": resource_type,
-                "success": True,
-                "status_code": response.status_code,
-                "data": response.json(),
-                "error": None
-            }
-        else:
-            return {
-                "resource_type": resource_type,
-                "success": False,
-                "status_code": response.status_code,
-                "data": None,
-                "error": response.text
-            }
     except Exception as e:
-        return {
-            "resource_type": resource_type,
-            "success": False,
-            "status_code": None,
-            "data": None,
-            "error": str(e)
-        }
+        # Nothing arrived at all: a timeout, a DNS failure, a refused connection.
+        return result(False, status_code=None, error=str(e))
+
+    if response.status_code != 200:
+        return result(False, response.status_code, error=response.text)
+
+    try:
+        data = response.json()
+    except ValueError:
+        # A 200 whose body is not JSON, typically an error page from something
+        # sitting in front of the EHR. It did arrive, so it keeps the status it
+        # arrived with rather than being reported as unreachable.
+        return result(False, response.status_code, error=response.text)
+
+    return result(True, response.status_code, data=data)
 
 
-async def fetch_fhir_resources(access_token, base_url, fhir_patient_id):
-    epic_fhir_base_url = base_url
+async def fetch_and_normalize(client, url, params, headers, resource_type, fhir_type):
+    """Fetch one resource type and normalize it, returning ``(key, envelope)``.
 
-    resource_types = config.RESOURCE_FETCH_CONFIG
+    Pairing the two means the parsing happens as each response lands rather than
+    after every one of them has, so it overlaps the requests still in flight
+    instead of being added to the end of the slowest.
+    """
+    response = await fetch_single_resource(client, url, params, headers)
+
+    if response["success"]:
+        return resource_type, normalize.normalize_response(
+            response["data"], fhir_type=fhir_type, status_code=response["status_code"]
+        )
+    return resource_type, normalize.normalize_failure(
+        fhir_type=fhir_type,
+        status_code=response["status_code"],
+        body=response["error"],
+    )
+
+
+async def fetch_fhir_resources(access_token, base_url, fhir_patient_id, tier):
+    resource_types = config.resources_for(tier)
 
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/fhir+json"
     }
 
-    resources = {}
-
-    async with httpx.AsyncClient() as client:
+    # All types are requested at once (ten by default, the whole config for
+    # ?include=all). Cap connections so the widest read does not hit one EHR as a
+    # throttle-worthy burst, and set a timeout so one slow endpoint cannot hold
+    # the request open.
+    limits = httpx.Limits(max_connections=10)
+    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
         tasks = []
 
         for resource_type, endpoint_config in resource_types.items():
@@ -78,18 +86,18 @@ async def fetch_fhir_resources(access_token, base_url, fhir_patient_id):
             if "extra_params" in endpoint_config:
                 params.update(endpoint_config["extra_params"])
 
-            tasks.append(fetch_single_resource(client, epic_fhir_base_url + url_path, params, headers, resource_type))
+            tasks.append(
+                fetch_and_normalize(
+                    client,
+                    base_url + url_path,
+                    params,
+                    headers,
+                    resource_type,
+                    config.fhir_type_for(endpoint_config),
+                )
+            )
 
-        responses = await asyncio.gather(*tasks)
-
-        for resource, response in zip(resource_types, responses):
-            if response["success"]:
-                resources[resource] = response["data"]
-            else:
-                resources[resource] = {
-                    "error": response["error"],
-                    "status_code": response["status_code"]
-                }
-
-    return resources
+        # What leaves this module is our shape, keyed by fetch config row, rather
+        # than the provider's.
+        return dict(await asyncio.gather(*tasks))
 

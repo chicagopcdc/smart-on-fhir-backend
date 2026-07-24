@@ -20,46 +20,24 @@ import pytest
 import respx
 
 from app.auth.models import OAuthState
-from tests.app_harness import app_db as _app_db, client as _client, load_fixture
+from tests.app_harness import (
+    CERNER_SANDBOX,
+    EPIC_SANDBOX,
+    SMART_LAUNCHER,
+    app_db as _app_db,
+    client as _client,
+    load_fixture,
+)
 
 
-# Each server the single adapter must drive, described only by data the app does
-# not discover: which provider row to use, the issuer to authorize against, and
-# whether the registration carries a client secret (confidential) or not (public).
+# Each server the single adapter must drive. The descriptors live in the harness;
+# what belongs here is the one fact this test turns on and the app does not
+# discover: whether the registration carries a client secret (confidential) or
+# not (public).
 SERVERS = [
-    pytest.param(
-        {
-            "provider": "EPIC_SANDBOX",
-            "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
-            "config": load_fixture("epic_smart_config.json"),
-            "authorize_url": "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/authorize",
-            "token_url": "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token",
-            "confidential": True,
-        },
-        id="epic",
-    ),
-    pytest.param(
-        {
-            "provider": "SMART_LAUNCHER",
-            "iss": "https://launch.smarthealthit.org/v/r4/fhir",
-            "config": load_fixture("smarthealthit_smart_config.json"),
-            "authorize_url": "https://launch.smarthealthit.org/v/r4/auth/authorize",
-            "token_url": "https://launch.smarthealthit.org/v/r4/auth/token",
-            "confidential": False,
-        },
-        id="smart-launcher",
-    ),
-    pytest.param(
-        {
-            "provider": "CERNER_SANDBOX",
-            "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
-            "config": load_fixture("cerner_smart_config.json"),
-            "authorize_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/protocols/oauth2/profiles/smart-v1/personas/provider/authorize",
-            "token_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/hosts/fhir-ehr-code.cerner.com/protocols/oauth2/profiles/smart-v1/token",
-            "confidential": False,
-        },
-        id="cerner",
-    ),
+    pytest.param({**EPIC_SANDBOX, "confidential": True}, id="epic"),
+    pytest.param({**SMART_LAUNCHER, "confidential": False}, id="smart-launcher"),
+    pytest.param({**CERNER_SANDBOX, "confidential": False}, id="cerner"),
 ]
 
 
@@ -70,7 +48,9 @@ async def test_same_adapter_completes_pkce_flow_for_each_server(
 ):
     iss = server["iss"]
     well_known = iss + "/.well-known/smart-configuration"
-    respx.get(well_known).mock(return_value=httpx.Response(200, json=server["config"]))
+    respx.get(well_known).mock(
+        return_value=httpx.Response(200, json=load_fixture(server["smart_config"]))
+    )
     token_route = respx.post(server["token_url"]).mock(
         return_value=httpx.Response(200, json=epic_token_response)
     )

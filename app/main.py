@@ -13,7 +13,7 @@ import secrets
 import httpx
 
 from app.providers import config, lantern
-from app.fhir import service
+from app.fhir import normalize, service
 
 from contextlib import asynccontextmanager
 from fastapi import Query
@@ -40,6 +40,9 @@ from app.core.config import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Build the FHIR model classes now so the first read is not the one that pays
+    # for it on the event loop.
+    normalize.warm_model_cache()
     yield
     await engine.dispose()
 
@@ -276,6 +279,11 @@ async def handle_callback(
 @limiter.limit(lambda: get_settings().fhir_rate_limit)
 async def get_all_resource(
     request: Request,
+    include: config.ResourceTier = Query(
+        config.ResourceTier.US_CORE,
+        description="Which slice of the record to read: the US Core set a certified "
+        "server must support, or every configured resource type",
+    ),
     app_session: AppSession = Depends(get_current_session),
     session: AsyncSession = Depends(get_session),
 ):
@@ -299,9 +307,21 @@ async def get_all_resource(
     # The access token is read from storage (decrypted by the ORM) rather than
     # taken from the URL, so a bearer token never travels as a query parameter.
     resources = await service.fetch_fhir_resources(
-        token_row.access_token, token_row.iss, app_session.patient_fhir_id
+        token_row.access_token, token_row.iss, app_session.patient_fhir_id, tier=include
     )
-    return JSONResponse(resources)
+
+    # Keyed by fetch config row, so the two Observation searches stay separate.
+    # The request context (tier, patient, provider) travels alongside so a caller
+    # need not remember what it asked for to read a partial record.
+    return JSONResponse(
+        {
+            "include": include.value,
+            "patient": app_session.patient_fhir_id,
+            "provider": app_session.provider,
+            "iss": app_session.iss,
+            "resources": resources,
+        }
+    )
 
 
 # Maximum allowed number of rows per page in the response

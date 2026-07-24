@@ -269,7 +269,11 @@ async def test_resources_are_fetched_with_the_stored_token(
         == f"Bearer {epic_token_response['access_token']}"
     )
     assert epic_token_response["access_token"] not in str(fhir_request.url)
-    assert response.json()["Patient"] == {"resourceType": "Bundle", "entry": []}
+    # What the token bought reaches the caller, normalized. The mocked server
+    # answers every search with an empty bundle, so the record is empty but the
+    # envelope is still there.
+    assert response.json()["resources"]["Patient"]["status"] == "ok"
+    assert response.json()["resources"]["Patient"]["entries"] == []
 
 
 async def test_resources_without_a_session_are_refused(tmp_path):
