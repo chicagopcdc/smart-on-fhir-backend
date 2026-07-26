@@ -13,12 +13,24 @@ module uses needs no future import on the supported Python versions.
 import secrets
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import auth_rate_limit, limiter, provider_for
+from app.api.deps import (
+    auth_rate_limit,
+    get_optional_session,
+    limiter,
+    provider_for,
+)
+from app.api.schemas import (
+    CallbackResponse,
+    Connection,
+    ConnectRequest,
+    ConnectResponse,
+    ErrorResponse,
+)
 from app.auth.models import AppSession, OAuthState
 from app.core.config import get_settings
 from app.core.db import (
@@ -39,24 +51,29 @@ class CallbackData(BaseModel):
     state: str
 
 
-# http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4
-@router.get("/auth/start")
-@limiter.limit(auth_rate_limit)
-async def start_auth(
-    request: Request,
+async def _begin_authorization(
+    session: AsyncSession,
+    *,
     provider: str,
     iss: str,
-    session: AsyncSession = Depends(get_session),
-):
+    link_patient_id: str | None,
+) -> tuple[str, str, int]:
+    """Validate a connection request and mint the authorization it needs.
+
+    Returns ``(authorization_url, state, ttl_seconds)``. Everything that can be
+    refused is refused here, before the patient is sent anywhere, and as an
+    ``HTTPException`` so a caller is told which of the two it was: their request,
+    or the server they named.
+    """
     ehr = config.EHR_CONFIGS.get(provider)
     if not ehr:
-        return JSONResponse({"error": "Unknown or unsupported provider"}, status_code=400)
+        raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
 
     # A provider with no configured client_id is a deployment that did not set
     # its credentials; fail clearly here rather than redirect the user to the
     # EHR with an empty client_id and let them hit an opaque invalid_client.
     if not ehr.get("client_id"):
-        return JSONResponse({"error": "Provider is not configured"}, status_code=503)
+        raise HTTPException(status_code=503, detail="Provider is not configured")
 
     # Canonicalize once so the allowlist check, the persisted state, and the
     # derived aud all agree on the same issuer string.
@@ -73,21 +90,22 @@ async def start_auth(
     if iss not in allowed_issuers and not any(
         iss.startswith(prefix) for prefix in allowed_prefixes
     ):
-        return JSONResponse(
-            {"error": "Issuer not allowed for this provider"}, status_code=400
+        raise HTTPException(
+            status_code=400, detail="Issuer not allowed for this provider"
         )
 
     provider_adapter = provider_for(ehr, iss)
     try:
         smart_config = await provider_adapter.discover(iss)
     except SMARTDiscoveryError:
-        return JSONResponse(
-            {"error": "Could not read the server's SMART configuration"}, status_code=502
+        raise HTTPException(
+            status_code=502, detail="Could not read the server's SMART configuration"
         )
 
     # Opportunistic sweep so expired anti-CSRF state does not accumulate.
     await delete_expired_states(session)
 
+    ttl = get_settings().oauth_state_ttl_seconds
     state = secrets.token_urlsafe(16)
     auth = provider_adapter.build_auth_url(smart_config, state, ehr["scopes"].split())
     session.add(
@@ -95,22 +113,125 @@ async def start_auth(
             state,
             iss,
             provider,
-            get_settings().oauth_state_ttl_seconds,
+            ttl,
             code_verifier=auth.code_verifier,
+            link_patient_id=link_patient_id,
         )
     )
     await session.commit()
 
-    return RedirectResponse(auth.url)
+    return auth.url, state, ttl
 
 
-@router.post("/auth/callback")
+@router.post(
+    "/auth/connect",
+    response_model=ConnectResponse,
+    summary="Start connecting a patient to a provider",
+    responses={
+        400: {"model": ErrorResponse, "description": "Unknown provider, or an issuer that provider is not registered for"},
+        401: {"model": ErrorResponse, "description": "A session was presented but is invalid or expired"},
+        502: {"model": ErrorResponse, "description": "The server's SMART configuration could not be read"},
+        503: {"model": ErrorResponse, "description": "The provider has no credentials configured in this deployment"},
+    },
+)
+@limiter.limit(auth_rate_limit)
+async def connect(
+    request: Request,
+    body: ConnectRequest = Body(
+        openapi_examples={
+            "first": {
+                "summary": "Connect a patient's first provider",
+                "value": {
+                    "provider": "EPIC_SANDBOX",
+                    "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+                },
+            },
+            "second": {
+                "summary": "Add a second provider to the same record",
+                "description": "Send the session from the first connection as "
+                "`Authorization: Bearer <sessionId>`. The new connection joins that "
+                "patient record instead of starting one of its own.",
+                "value": {
+                    "provider": "CERNER_SANDBOX",
+                    "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+                },
+            },
+        }
+    ),
+    app_session: AppSession | None = Depends(get_optional_session),
+    session: AsyncSession = Depends(get_session),
+):
+    """Begin the SMART App Launch flow and return where to send the patient.
+
+    Answers with the authorization URL rather than redirecting to it, so a caller
+    that is not a browser can drive the flow. Send the patient there; the
+    provider redirects back to this application's registered `redirect_uri` with
+    a `code` and the `state` returned here, which `POST /auth/callback` exchanges
+    for tokens.
+
+    Presenting an existing session means "this provider is the same patient as
+    the record I already hold", and the resulting connection joins that record.
+    Without one, the connection anchors a new record.
+    """
+    url, state, ttl = await _begin_authorization(
+        session,
+        provider=body.provider,
+        iss=body.iss,
+        link_patient_id=app_session.patient_id if app_session else None,
+    )
+    return ConnectResponse(authorization_url=url, state=state, expires_in=ttl)
+
+
+# http://127.0.0.1:8000/auth/start?provider=EPIC_SANDBOX&iss=https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4
+@router.get(
+    "/auth/start",
+    deprecated=True,
+    summary="Start the flow by redirecting the browser (deprecated)",
+    description="Superseded by `POST /auth/connect`, which returns the "
+    "authorization URL instead of redirecting to it and can link a second "
+    "provider to an existing patient record. Kept so the current frontend keeps "
+    "working; it will be removed once that has moved.",
+)
+@limiter.limit(auth_rate_limit)
+async def start_auth(
+    request: Request,
+    provider: str,
+    iss: str,
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        url, _state, _ttl = await _begin_authorization(
+            session, provider=provider, iss=iss, link_patient_id=None
+        )
+    except HTTPException as exc:
+        # This endpoint answered with {"error": …} before /auth/connect existed,
+        # and callers still read that. The new shape is on /auth/connect.
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    return RedirectResponse(url)
+
+
+@router.post(
+    "/auth/callback",
+    response_model=CallbackResponse,
+    summary="Exchange the authorization code for a session",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid or expired state, a refused exchange, or an authorization with no patient context"},
+        502: {"model": ErrorResponse, "description": "The provider could not be reached, or requires an unsupported client authentication method"},
+    },
+)
 @limiter.limit(auth_rate_limit)
 async def handle_callback(
     request: Request,
     callback_data: CallbackData,
     session: AsyncSession = Depends(get_session),
 ):
+    """Complete an authorization and return the session that reads its record.
+
+    Called with the `code` and `state` the provider redirected back with. The
+    tokens are stored encrypted and never leave the server; what comes back is a
+    session to present on the `/patients/{patientId}/…` routes.
+    """
     code = callback_data.code
     state = callback_data.state
 
@@ -119,11 +240,15 @@ async def handle_callback(
     if state_row is None or state_row.is_expired:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
-    # The issuer was validated against the provider's allowlist at /auth/start
-    # and is the only one stored on the state row, so it is trusted here.
+    # The issuer was validated against the provider's allowlist at /auth/connect
+    # and is the only one stored on the state row, so it is trusted here. The
+    # same goes for the record to link into: it was checked against a live
+    # session when the flow started, so a completed authorization cannot be
+    # steered into someone else's record now.
     iss = state_row.iss
     provider = state_row.provider
     code_verifier = state_row.code_verifier
+    link_patient_id = state_row.link_patient_id
     ehr = config.EHR_CONFIGS.get(provider)
     if ehr is None:
         raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
@@ -152,24 +277,34 @@ async def handle_callback(
         # Timeout or network failure reaching the provider — an upstream problem.
         raise HTTPException(status_code=502, detail="Token exchange failed")
 
-    # A session is scoped to a patient, so a token with no patient context cannot
-    # anchor one. Refuse rather than store it under an empty id, which two such
-    # authorizations would then share.
+    # A connection is scoped to a patient, so a token with no patient context
+    # cannot anchor one. Refuse rather than store it under an empty id, which two
+    # such authorizations would then share.
     if not token_set.patient:
         raise HTTPException(
             status_code=400, detail="Authorization returned no patient context"
         )
 
-    await persist_token(session, provider=provider, iss=iss, token_set=token_set)
+    # Passing the link through means the connection joins the record the caller
+    # already held. Passing None leaves an existing connection on the record it
+    # is already on, so re-authorizing one provider does not strand the others.
+    token_row = await persist_token(
+        session,
+        patient_id=link_patient_id,
+        provider=provider,
+        iss=iss,
+        token_set=token_set,
+    )
 
-    # Issue a session bound to the patient just authorized. The frontend presents
-    # it to read resources, so access is scoped to this patient rather than to a
-    # patient id the caller could name.
+    # Issue a session against the record, not the connection, so the bearer
+    # reaches everything that record holds and nothing outside it.
+    ttl = get_settings().app_session_ttl_seconds
     app_session = AppSession.issue(
+        patient_id=token_row.patient_id,
         patient_fhir_id=token_set.patient,  # guaranteed present by the guard above
         provider=provider,
         iss=iss,
-        ttl_seconds=get_settings().app_session_ttl_seconds,
+        ttl_seconds=ttl,
     )
     # Fold an expired-session sweep into the commit that persists this one, so the
     # table stays tidy without adding a write to the resource read path.
@@ -177,11 +312,11 @@ async def handle_callback(
     session.add(app_session)
     await session.commit()
 
-    return JSONResponse(
-        content={
-            "success": True,
-            "patient": token_set.patient,
-            "session_id": app_session.session_id,
-        },
-        status_code=200,
+    return CallbackResponse(
+        patient_id=token_row.patient_id,
+        session_id=app_session.session_id,
+        expires_in=ttl,
+        connection=Connection(
+            provider=provider, iss=iss, patient_fhir_id=token_set.patient
+        ),
     )

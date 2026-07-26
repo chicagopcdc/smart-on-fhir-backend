@@ -14,6 +14,7 @@ from app.auth.models import AppSession
 
 def _session(patient: str, *, ttl_seconds: int) -> AppSession:
     return AppSession.issue(
+        patient_id=f"pat_{patient}",
         patient_fhir_id=patient,
         provider="EPIC_SANDBOX",
         iss="https://example.org/fhir",
