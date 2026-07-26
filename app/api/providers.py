@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
+from app.api.schemas import ProviderSearchResponse, ProviderSearchRow
 from app.providers import config, lantern
 
 router = APIRouter(tags=["providers"])
@@ -13,74 +14,145 @@ router = APIRouter(tags=["providers"])
 # Maximum allowed number of rows per page in the response
 PAGE_SIZE_MAX = 1000
 
+UNAVAILABLE = "Provider list is temporarily unavailable"
 
-@router.get("/providers")
+
+def _configured_by_issuer() -> dict[str, str]:
+    """Issuer -> provider key, for the endpoints this backend can authorize.
+
+    Keyed on the exact issuer and nothing looser. Two hospitals running the same
+    EHR are separate tenants with separate registrations, so a vendor match says
+    nothing about whether we hold credentials for a given endpoint.
+    """
+    return {p["iss"]: p["provider"] for p in config.configured_providers()}
+
+
+@router.get(
+    "/providers/search",
+    response_model=ProviderSearchResponse,
+    summary="Search the national list of FHIR endpoints",
+    responses={503: {"description": "No endpoint data is available to serve"}},
+)
+async def search_providers(
+    query: str = Query(
+        "",
+        description="Free-text match on the endpoint URL and the organization "
+        "exposing it, case-insensitive.",
+        examples=["children"],
+    ),
+    vendor: str = Query(
+        "",
+        description="Match on the certified EHR developer. This is what "
+        "separates endpoints *served by* a vendor from organizations that merely "
+        "have its name in theirs.",
+        examples=["Epic"],
+    ),
+    smart_only: bool = Query(
+        False,
+        alias="smartOnly",
+        description="Keep only endpoints that served a SMART configuration when "
+        "ONC last probed them, dropping the ones that failed and the ones it "
+        "could not reach.",
+    ),
+    page: int = Query(1, ge=1, description="1-based page index"),
+    page_size: int = Query(
+        50, ge=1, le=PAGE_SIZE_MAX, alias="pageSize", description="Rows per page"
+    ),
+):
+    """Search ONC's daily list of certified FHIR endpoints.
+
+    The URL of a row is the `iss` to pass to `POST /auth/connect`. Rows carry
+    `configured` and `provider` where this backend holds a registration that can
+    actually authorize against them.
+
+    Served from an in-memory copy of the published file, refreshed daily. If the
+    source is unreachable the last good data is served rather than an error, so a
+    bad day upstream degrades to stale results instead of an empty dropdown.
+    """
+    data, source, data_date = await lantern.current_endpoints()
+    if not data:
+        # Only reachable if the source is unavailable and no provider is
+        # configured, since the fallback seeds the dataset from the configured
+        # providers. A normal response rather than an uncaught error, so CORS
+        # headers still attach.
+        return JSONResponse({"detail": UNAVAILABLE}, status_code=503)
+
+    matches = lantern.search(data, query=query, vendor=vendor, smart_only=smart_only)
+    configured = _configured_by_issuer()
+
+    start, end = (page - 1) * page_size, page * page_size
+    rows = [
+        ProviderSearchRow(
+            idx=idx,
+            url=row["url"],
+            name=row["name"],
+            vendor=row.get("vendor"),
+            fhir_version=row.get("fhirVersion"),
+            smart_capable=row.get("smartCapable"),
+            configured=row["url"].rstrip("/") in configured,
+            provider=configured.get(row["url"].rstrip("/")),
+        )
+        for idx, row in enumerate(matches[start:end], start=start)
+    ]
+
+    return ProviderSearchResponse(
+        page=page,
+        page_size=page_size,
+        total_rows=len(matches),
+        has_more=end < len(matches),
+        source=source,
+        data_date=data_date,
+        rows=rows,
+    )
+
+
+@router.get(
+    "/providers",
+    summary="The providers this backend is configured for",
+)
 async def providers():
-    # The providers this backend is configured for (Epic sandbox, and more once they
-    # are registered), for the frontend to pin above the Lantern list. These are not in
-    # Lantern (it only lists certified production endpoints), so they can only come from
-    # our own config. Each carries the provider key /auth/start expects.
+    """The providers this backend holds credentials for, each with the key
+    `POST /auth/connect` expects.
+
+    These are not in the national list, which covers certified production
+    endpoints only, so a sandbox can be offered from nowhere else.
+    """
     return JSONResponse(config.configured_providers())
 
 
-# Define an HTTP GET endpoint at path /lantern-endpoints
-@router.get("/lantern-endpoints")
+@router.get(
+    "/lantern-endpoints",
+    deprecated=True,
+    summary="Search the endpoint list (deprecated)",
+    description="Superseded by `GET /providers/search`, which adds vendor and "
+    "SMART-capability filtering and says which endpoints this backend can "
+    "authorize against. Kept, with its original response shape, so the current "
+    "frontend keeps working; it will be removed once that has moved.",
+)
 async def lantern_endpoints(
-    # Query string for searching endpoints, optional (default: empty string)
     query: str = Query("", description="Free-text search, case-insensitive"),
-    # Page number for pagination (must be at least 1)
     page: int = Query(1, ge=1, description="1-based page index"),
-    # Number of rows per page (between 1 and PAGE_SIZE_MAX), accessed via query param `pageSize`
     page_size: int = Query(
-        500, ge=1, le=PAGE_SIZE_MAX, alias="pageSize",
-        description="Rows per page",
+        500, ge=1, le=PAGE_SIZE_MAX, alias="pageSize", description="Rows per page"
     ),
 ):
-    # Serve from the in-memory dataset, refreshing it opportunistically. This never
-    # raises: on any upstream failure the last-good (or seeded fallback) data is kept,
-    # so a bad data source degrades to stale data instead of a 500 that would also
-    # strip CORS headers off the response.
     data, source, data_date = await lantern.current_endpoints()
-
-    # Only reachable if the mirror is unavailable AND no provider is configured, since
-    # the fallback seeds the dataset from the configured providers. Return a normal
-    # response (not an uncaught error) so CORS headers still attach.
     if not data:
-        return JSONResponse(
-            {"error": "Provider list is temporarily unavailable"}, status_code=503
-        )
+        return JSONResponse({"error": UNAVAILABLE}, status_code=503)
 
-    # If a query is provided, filter the dataset by matching URL or name (case-insensitive)
-    if query:
-        q = query.lower()
-        data = [
-            row for row in data
-            if q in row["url"].lower() or q in row["name"].lower()
-        ]
-
-    # Calculate start and end indices for pagination
+    matches = lantern.search(data, query=query)
     start, end = (page - 1) * page_size, page * page_size
-    # Get the slice of data for the current page
-    slice_ = data[start:end]
 
-    # Build a list of rows with index, URL, and name for the response
-    rows = [
-        {
-            "idx": idx,  # Global index of the row
-            "url": r["url"],  # Endpoint URL
-            "name": r["name"],  # Name of the API source
-        }
-        for idx, r in enumerate(slice_, start=start)
-    ]
-
-    # Return the paginated result as a JSON response
     return JSONResponse(
         {
-            "page": page,  # Current page number
-            "pageSize": page_size,  # Page size
-            "totalRows": len(data),  # Total number of matching rows
-            "hasMore": end < len(data),  # Whether there are more pages
-            "rows": rows,  # The data rows for this page
+            "page": page,
+            "pageSize": page_size,
+            "totalRows": len(matches),
+            "hasMore": end < len(matches),
+            "rows": [
+                {"idx": idx, "url": r["url"], "name": r["name"]}
+                for idx, r in enumerate(matches[start:end], start=start)
+            ],
             "source": source,  # "mirror" (live file) or "fallback"
             "dataDate": data_date,  # ISO date of the served file, or null for the fallback
         }

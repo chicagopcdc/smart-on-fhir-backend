@@ -24,11 +24,13 @@ BASE = "lantern-daily-data"
 CONTENTS = f"https://api.github.com/repos/{REPO}/contents"
 RAW = f"https://raw.githubusercontent.com/{REPO}/main"
 
+# The columns the published file actually carries, in the order it carries them.
 CSV = (
-    '"url","api_information_source_name","api_developer_name"\n'
-    '"https://a.example/fhir","Alpha Clinic","Epic Systems Corporation"\n'
-    '"https://b.example/fhir","Beta Health","Oracle Health"\n'
-    '"","Gamma (no url, dropped)","X"\n'
+    '"url","api_information_source_name","certified_api_developer_name",'
+    '"capability_fhir_version","smart_http_response"\n'
+    '"https://a.example/fhir","Alpha Clinic","Epic Systems Corporation","4.0.1","200"\n'
+    '"https://b.example/fhir","Beta Health","Oracle Health","4.0.1","404"\n'
+    '"","Gamma (no url, dropped)","X","4.0.1","200"\n'
 )
 
 

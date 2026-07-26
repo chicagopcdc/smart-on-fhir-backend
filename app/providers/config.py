@@ -252,6 +252,18 @@ def validate_us_core_membership(names: frozenset[str], configs: dict) -> None:
 validate_us_core_membership(US_CORE_RESOURCES, RESOURCE_FETCH_CONFIG)
 
 
+# The fetch config's row names as an enum, so a caller naming a resource type
+# that does not exist gets a 422 listing what does, rather than a silently empty
+# result. Derived from the config so the two cannot drift.
+ResourceName = Enum(
+    "ResourceName",
+    {name: name for name in RESOURCE_FETCH_CONFIG},
+    type=str,
+    module=__name__,
+)
+ResourceName.__doc__ = "A resource type a read can ask for."
+
+
 class ResourceTier(str, Enum):
     """How much of a patient's record a read should cover.
 
@@ -276,7 +288,24 @@ def fhir_type_for(entry: dict) -> str:
     return entry["url_template"].strip("/").split("/", 1)[0]
 
 
+def _select(wanted) -> dict:
+    """The named fetch config rows, in the order the config declares them.
+
+    Iterating the config rather than the request keeps a read's shape stable: the
+    same resources come back in the same order however the caller listed them,
+    and a name that matches nothing simply is not there.
+    """
+    wanted = set(wanted)
+    return {name: entry for name, entry in RESOURCE_FETCH_CONFIG.items() if name in wanted}
+
+
 def resources_for(tier: ResourceTier) -> dict:
     """The fetch config rows a read should cover for the requested tier."""
-    wanted = RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
-    return {name: entry for name, entry in RESOURCE_FETCH_CONFIG.items() if name in wanted}
+    return _select(
+        RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
+    )
+
+
+def resources_named(names) -> dict:
+    """The fetch config rows for an explicitly named set of resources."""
+    return _select(names)
