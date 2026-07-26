@@ -40,15 +40,22 @@ EHR_CONFIGS = {
         "client_secret": None,
         "redirect_uri": _redirect_uri,
         "scopes": _DEFAULT_SCOPES,
+        # The launcher carries a standalone launch's context in the aud path
+        # (.../v/r4/sim/<base64 options>/fhir) and refuses one made against the
+        # plain FHIR base with "Invalid launch options". So the issuer offered
+        # here — which is what /providers advertises and a caller connects with —
+        # is the sim form, with an empty options object (base64 "{}"). Empty is
+        # enough: it satisfies the launcher's parse and leaves it to prompt for
+        # the patient, which is what a standalone launch is supposed to do.
         "allowed_issuers": [
-            "https://launch.smarthealthit.org/v/r4/fhir",
+            "https://launch.smarthealthit.org/v/r4/sim/e30/fhir",
         ],
-        # A standalone launch against the launcher encodes its launch context in
-        # the aud path (.../v/r4/sim/<opts>/fhir), so accept any FHIR base under
-        # the launcher's r4 tree in addition to the plain base. Safe as a prefix
-        # only here: this is a public client (no secret is ever sent), the prefix
-        # is same-host, and it ends in "/v/r4/" so a suffix look-alike host such
-        # as "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
+        # Accept any FHIR base under the launcher's r4 tree, so a caller that
+        # builds its own sim options, or uses the plain base for an EHR launch,
+        # still authorizes. Safe as a prefix only here: this is a public client
+        # (no secret is ever sent), the prefix is same-host, and it ends in
+        # "/v/r4/" so a suffix look-alike host such as
+        # "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
         # keep exact-match allowlisting (no prefixes) for tenant isolation.
         "allowed_issuer_prefixes": [
             "https://launch.smarthealthit.org/v/r4/",
