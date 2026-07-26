@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import main
+from app.api import deps
 from app.core.config import get_settings
 from tests.app_harness import client as _client
 
@@ -26,11 +26,11 @@ def low_auth_rate_limit(monkeypatch):
     """
     monkeypatch.setenv("AUTH_RATE_LIMIT", "2/minute")
     get_settings.cache_clear()
-    main.limiter.enabled = True
-    main.limiter.reset()
+    deps.limiter.enabled = True
+    deps.limiter.reset()
     yield
-    main.limiter.enabled = False
-    main.limiter.reset()
+    deps.limiter.enabled = False
+    deps.limiter.reset()
     get_settings.cache_clear()
 
 
