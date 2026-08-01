@@ -335,6 +335,10 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
 
+Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
+`Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
+`FHIR_RATE_LIMIT`) and can be turned off for local single-user runs.
+
 ### Deprecated
 
 These keep working, with their original response shapes, until the frontend has moved

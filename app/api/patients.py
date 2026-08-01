@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import fhir_rate_limit, get_current_session, limiter
+from app.api.deps import RATE_LIMITED, fhir_rate_limit, get_current_session, limiter
 from app.api.schemas import (
     ConnectionHealth,
     ConnectionResources,
@@ -175,7 +175,7 @@ async def _read_all(
     "/patients/{patientId}/resources",
     response_model=ResourcesResponse,
     summary="Read a patient's normalized resources",
-    responses={401: UNAUTHORIZED, 404: NOT_FOUND},
+    responses={401: UNAUTHORIZED, 404: NOT_FOUND, 429: RATE_LIMITED},
 )
 @limiter.limit(fhir_rate_limit)
 async def read_resources(
@@ -240,7 +240,7 @@ async def read_resources(
     "/patients/{patientId}/summary",
     response_model=SummaryResponse,
     summary="Read a patient's clinical summary",
-    responses={401: UNAUTHORIZED, 404: NOT_FOUND},
+    responses={401: UNAUTHORIZED, 404: NOT_FOUND, 429: RATE_LIMITED},
 )
 @limiter.limit(fhir_rate_limit)
 async def read_summary(

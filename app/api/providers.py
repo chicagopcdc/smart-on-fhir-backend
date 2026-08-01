@@ -6,7 +6,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from app.api.schemas import ProviderSearchResponse, ProviderSearchRow
+from app.api.schemas import (
+    ConfiguredProvider,
+    ProviderSearchResponse,
+    ProviderSearchRow,
+)
 from app.providers import config, lantern
 
 router = APIRouter(tags=["providers"])
@@ -108,6 +112,7 @@ async def search_providers(
 
 @router.get(
     "/providers",
+    response_model=list[ConfiguredProvider],
     summary="The providers this backend is configured for",
 )
 async def providers():
@@ -117,7 +122,7 @@ async def providers():
     These are not in the national list, which covers certified production
     endpoints only, so a sandbox can be offered from nowhere else.
     """
-    return JSONResponse(config.configured_providers())
+    return config.configured_providers()
 
 
 @router.get(

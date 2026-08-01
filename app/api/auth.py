@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    RATE_LIMITED,
     auth_rate_limit,
     get_optional_session,
     limiter,
@@ -130,6 +131,7 @@ async def _begin_authorization(
     responses={
         400: {"model": ErrorResponse, "description": "Unknown provider, or an issuer that provider is not registered for"},
         401: {"model": ErrorResponse, "description": "A session was presented but is invalid or expired"},
+        429: RATE_LIMITED,
         502: {"model": ErrorResponse, "description": "The server's SMART configuration could not be read"},
         503: {"model": ErrorResponse, "description": "The provider has no credentials configured in this deployment"},
     },
@@ -217,6 +219,7 @@ async def start_auth(
     summary="Exchange the authorization code for a session",
     responses={
         400: {"model": ErrorResponse, "description": "Invalid or expired state, a refused exchange, or an authorization with no patient context"},
+        429: RATE_LIMITED,
         502: {"model": ErrorResponse, "description": "The provider could not be reached, or requires an unsupported client authentication method"},
     },
 )

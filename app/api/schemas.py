@@ -397,7 +397,31 @@ class SummaryResponse(APIModel):
     )
 
 
-# --- provider search ---------------------------------------------------------
+# --- providers ---------------------------------------------------------------
+
+
+class ConfiguredProvider(APIModel):
+    """One endpoint this backend holds a registration for.
+
+    Distinct from a search row: that describes an endpoint the national list
+    knows about, which says nothing about whether we can authorize against it.
+    This describes one we can, so every entry is connectable.
+    """
+
+    provider: str = Field(
+        description="The provider key to pass to `POST /auth/connect`. It selects "
+        "the client credentials and the issuers that are allowed.",
+        examples=["EPIC_SANDBOX"],
+    )
+    iss: str = Field(
+        description="The FHIR base URL to connect with, canonicalized to the exact "
+        "form the provider's allowlist accepts back.",
+        examples=["https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"],
+    )
+    name: str = Field(
+        description="A display label for the entry, derived from the provider key.",
+        examples=["Epic Sandbox"],
+    )
 
 
 class ProviderSearchRow(APIModel):

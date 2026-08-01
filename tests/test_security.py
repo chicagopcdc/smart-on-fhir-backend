@@ -7,9 +7,16 @@ it is in production.
 from __future__ import annotations
 
 import pytest
+import respx
 
 from app.api import deps
 from app.core.config import get_settings
+from tests.app_harness import (
+    SMART_LAUNCHER,
+    app_db,
+    mock_server,
+    token_response,
+)
 from tests.app_harness import client as _client
 
 # Matches FRONTEND_HOSTNAME set for the test environment in conftest.
@@ -75,3 +82,53 @@ async def test_auth_start_is_rate_limited(low_auth_rate_limit):
     assert first.status_code == 400
     assert second.status_code == 400
     assert third.status_code == 429
+
+
+@respx.mock
+async def test_the_throttle_leaves_a_route_that_returns_a_model_alone(
+    low_auth_rate_limit, tmp_path
+):
+    """A limited route that answers with a Pydantic model still succeeds.
+
+    slowapi hands the endpoint's return value to its header injection, and takes
+    a different branch when that value is not already a ``Response``: it reaches
+    for a ``response`` argument on the endpoint instead, and raises when there is
+    none. So the routes that answer with a model — which is most of them now —
+    fail in a way the ones answering ``JSONResponse`` never do. Worth pinning,
+    because the difference is invisible until the limiter is switched on.
+    """
+    async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'throttle.db'}"):
+        async with _client() as client:
+            mock_server(SMART_LAUNCHER, token_response("throttle-patient"))
+            body = {
+                "provider": SMART_LAUNCHER["provider"],
+                "iss": SMART_LAUNCHER["iss"],
+            }
+            first = await client.post("/auth/connect", json=body)
+            second = await client.post("/auth/connect", json=body)
+            third = await client.post("/auth/connect", json=body)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert third.status_code == 429
+
+
+async def test_a_throttled_request_is_refused_like_every_other_refusal(
+    low_auth_rate_limit,
+):
+    """429 answers `detail`, not slowapi's own `error`.
+
+    Every other refusal in this API is an ``HTTPException``, so it arrives as
+    ``{"detail": …}``. Leaving the throttle to answer ``{"error": …}`` would make
+    it the one status a client has to special-case, and ``Retry-After`` is what
+    turns a refusal into something a client can act on rather than guess at.
+    """
+    params = {"provider": "NOPE", "iss": "https://example.org/fhir"}
+    async with _client() as client:
+        for _ in range(3):
+            response = await client.get("/auth/start", params=params)
+
+    assert response.status_code == 429
+    assert "error" not in response.json()
+    assert response.json()["detail"].startswith("Rate limit exceeded")
+    assert response.headers["retry-after"] == "60"

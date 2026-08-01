@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api import auth, deps, patients, providers
@@ -61,7 +60,7 @@ app = FastAPI(
 )
 
 app.state.limiter = deps.limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, deps.rate_limit_exceeded_handler)
 
 # Only the known frontend may call the API from a browser. Credentials are not
 # used (the session travels as a bearer token, not a cookie), so a wildcard

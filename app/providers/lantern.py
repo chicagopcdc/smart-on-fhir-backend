@@ -7,7 +7,7 @@ never depends on a live fetch to answer a request. It serves an **in-memory data
 is seeded at import from a small curated fallback (the providers this backend is actually
 configured for) and refreshed opportunistically from the mirror's newest available file.
 
-Any upstream failure leaves the last good data in place, so ``/lantern-endpoints`` returns
+Any upstream failure leaves the last good data in place, so ``/providers/search`` returns
 data (200) rather than an uncaught 500 — which matters because a 500 is produced above the
 CORS middleware and would strip ``Access-Control-Allow-Origin``, turning a backend hiccup
 into an opaque browser failure that the frontend then retries in a loop.

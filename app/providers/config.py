@@ -120,7 +120,7 @@ def configured_providers() -> list[dict]:
     """The providers this backend can actually authorize against, for the frontend's
     dropdown: one ``{"provider", "iss", "name"}`` entry per allowed issuer.
 
-    Providers with no ``client_id`` are skipped — ``/auth/start`` rejects those as
+    Providers with no ``client_id`` are skipped — ``/auth/connect`` rejects those as
     unconfigured, so offering them would be a dead end. Derived from ``EHR_CONFIGS`` so
     the list never drifts from what we can connect to, and grows automatically as
     providers are added (nothing to keep in sync on the frontend). An issuer is listed
@@ -132,7 +132,7 @@ def configured_providers() -> list[dict]:
             continue
         for iss in ehr.get("allowed_issuers", []):
             if iss:
-                # Canonicalize the same way /auth/start does, so the issuer offered here
+                # Canonicalize the same way /auth/connect does, so the issuer offered here
                 # is exactly the one the allowlist accepts back.
                 iss = iss.rstrip("/")
                 by_issuer.setdefault(

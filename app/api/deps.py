@@ -9,12 +9,15 @@ and quietly double the effective limit.
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ErrorResponse
 from app.auth.models import AppSession
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -40,6 +43,37 @@ def auth_rate_limit() -> str:
 
 def fhir_rate_limit() -> str:
     return get_settings().fhir_rate_limit
+
+
+# What a throttled route answers, for the OpenAPI document. Declared beside the
+# limiter so a route that adds the decorator has the matching documentation to
+# hand, rather than reaching into another router for it.
+RATE_LIMITED = {
+    "model": ErrorResponse,
+    "description": "Too many requests from this client. `Retry-After` says when to "
+    "come back.",
+}
+
+
+def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Answer a throttled request the way the rest of the API answers a refusal.
+
+    slowapi's own handler renders ``{"error": …}``, which would leave 429 as the
+    one status whose body a caller has to special-case: every other refusal here
+    is an ``HTTPException``, so it arrives as ``{"detail": …}``.
+
+    ``Retry-After`` is set from the limit's own window rather than by turning on
+    slowapi's ``headers_enabled``. That flag also injects headers into successful
+    responses, which it does by reaching for a ``response`` argument on the
+    endpoint — so every throttled route would have to take a parameter it has no
+    other use for, or raise on the way out. One full window is a conservative
+    answer, and being early is the failure a caller can absorb.
+    """
+    return JSONResponse(
+        {"detail": f"Rate limit exceeded: {exc.detail}"},
+        status_code=429,
+        headers={"Retry-After": str(exc.limit.limit.get_expiry())},
+    )
 
 
 # One discovery cache shared across requests: re-authorizing the same issuer

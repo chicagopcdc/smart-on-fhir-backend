@@ -57,7 +57,7 @@ class OAuthState(Base):
     """A short-lived OAuth ``state`` value, persisted so it survives restarts.
 
     Replaces the in-memory ``state_store`` dict. ``state`` is the anti-CSRF nonce
-    minted at ``/auth/start`` and verified at ``/auth/callback``; the row is
+    minted at ``/auth/connect`` and verified at ``/auth/callback``; the row is
     valid until ``expires_at``.
     """
 

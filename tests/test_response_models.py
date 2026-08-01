@@ -9,12 +9,20 @@ the data stay plausible while no longer matching.
 So the models are validated against real normalizer output — including the shape
 of a read that failed, which is the one a consumer is least likely to have tried
 and most likely to be surprised by.
+
+The generated document is checked here too, for a failure one step earlier: a
+route that declares no model at all. FastAPI documents that as an empty schema
+rather than refusing it, so the endpoint keeps working and `/docs` silently tells
+a caller nothing. This is the same fail-fast instinct as
+``validate_us_core_membership`` and ``validate_section_sources``, applied to the
+HTTP surface instead of the fetch config.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from app import main
 from app.api.schemas import ResourceEnvelope
 from app.fhir import normalize
 from app.providers import config
@@ -64,3 +72,25 @@ def test_an_undeclared_status_is_refused():
 
     with pytest.raises(ValueError):
         ResourceEnvelope.model_validate(envelope)
+
+
+def _documented_success_schema(operation: dict) -> dict:
+    content = operation.get("responses", {}).get("200", {}).get("content", {})
+    return content.get("application/json", {}).get("schema", {})
+
+
+def test_every_supported_route_documents_what_it_returns():
+    """A live route with no response model is undocumented, not merely untyped.
+
+    The deprecated aliases are exempt: they exist to keep the current frontend
+    working and answer their original hand-built shapes, which is precisely why
+    they are marked deprecated rather than modelled.
+    """
+    undocumented = [
+        f"{method.upper()} {path}"
+        for path, operations in main.app.openapi()["paths"].items()
+        for method, operation in operations.items()
+        if not operation.get("deprecated") and not _documented_success_schema(operation)
+    ]
+
+    assert not undocumented, f"routes returning an undocumented shape: {undocumented}"
