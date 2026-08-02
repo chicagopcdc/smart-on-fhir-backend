@@ -102,14 +102,20 @@ def test_every_supported_route_documents_what_it_returns():
 
 
 def _throttled_paths() -> set[str]:
-    """The routes carrying a rate limit, read from the limiter's own registry.
+    """The routes carrying a rate limit, read from the limiter's own registries.
 
     Derived rather than listed, so a route that gains the decorator is covered
-    without anyone remembering to add it here. Reads a slowapi internal, which is
-    why it lives in the suite: an upgrade that moves it fails loudly in CI rather
-    than leaving `/docs` quietly wrong.
+    without anyone remembering to add it here. Both registries are read because
+    slowapi files a limit under whichever it is: this codebase passes callables
+    so its routes land in the dynamic one, but a limit written as a literal
+    (`@limiter.limit("5/minute")`) goes to the static one, and reading only the
+    first would leave that route silently outside this check.
+
+    These are slowapi internals, which is why the derivation lives in the suite:
+    an upgrade that moves them fails loudly in CI rather than leaving `/docs`
+    quietly wrong.
     """
-    limited = deps.limiter._dynamic_route_limits
+    limited = {*deps.limiter._dynamic_route_limits, *deps.limiter._route_limits}
     return {
         route.path
         for route in main.app.routes

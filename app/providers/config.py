@@ -78,9 +78,9 @@ EHR_CONFIGS = {
 def validate_issuer_prefixes(configs: dict) -> None:
     """Fail fast if any provider's ``allowed_issuer_prefixes`` is unsafe.
 
-    Prefix matching in ``start_auth`` widens which issuers a provider may talk to,
-    so it is only safe when two invariants hold — both enforced here rather than
-    left to a comment, so they cannot silently rot as configs change:
+    Prefix matching where an authorization begins widens which issuers a provider
+    may talk to, so it is only safe when two invariants hold — both enforced here
+    rather than left to a comment, so they cannot silently rot as configs change:
 
     * The provider sends **no client secret**. Prefix matching on a confidential
       client would let its secret reach any host under the prefix.
