@@ -18,12 +18,12 @@ from app.api.schemas import (
     ConnectionHealth,
     ConnectionResources,
     Demographics,
-    ErrorResponse,
     ResourceEnvelope,
     ResourcesResponse,
     SummaryIssue,
     SummaryResponse,
     SummarySection,
+    refusal,
 )
 from app.auth.models import AppSession, ProviderToken, utcnow
 from app.core.db import connections_for_patient, get_session
@@ -40,14 +40,8 @@ PATIENT_ID = Path(
     examples=["pat_9Fq3TnVb2mKd7sXwLp4RcYhZ"],
 )
 
-NOT_FOUND = {
-    "model": ErrorResponse,
-    "description": "No such record, or the session does not hold it",
-}
-UNAUTHORIZED = {
-    "model": ErrorResponse,
-    "description": "Missing, invalid, or expired session",
-}
+NOT_FOUND = refusal("No such record, or the session does not hold it")
+UNAUTHORIZED = refusal("Missing, invalid, or expired session")
 
 
 async def _authorized_connections(

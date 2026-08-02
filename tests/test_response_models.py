@@ -11,11 +11,15 @@ of a read that failed, which is the one a consumer is least likely to have tried
 and most likely to be surprised by.
 
 The generated document is checked here too, for a failure one step earlier: a
-route that declares no model at all. FastAPI documents that as an empty schema
-rather than refusing it, so the endpoint keeps working and `/docs` silently tells
-a caller nothing. This is the same fail-fast instinct as
-``validate_us_core_membership`` and ``validate_section_sources``, applied to the
-HTTP surface instead of the fetch config.
+route that declares no model, or that can be throttled without saying so. FastAPI
+documents either as an empty schema rather than refusing it, so the endpoint
+keeps working and `/docs` silently tells a caller nothing.
+
+These stay tests rather than import-time assertions like
+``validate_us_core_membership``. Those guard behaviour — a name that matches no
+fetch config row drops a resource from every read — so they are worth refusing to
+boot over. This guards the published contract: the bytes are right and only the
+documentation is poorer, which belongs in CI rather than in a startup path.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from app import main
+from app.api import deps
 from app.api.schemas import ResourceEnvelope
 from app.fhir import normalize
 from app.providers import config
@@ -94,3 +99,41 @@ def test_every_supported_route_documents_what_it_returns():
     ]
 
     assert not undocumented, f"routes returning an undocumented shape: {undocumented}"
+
+
+def _throttled_paths() -> set[str]:
+    """The routes carrying a rate limit, read from the limiter's own registry.
+
+    Derived rather than listed, so a route that gains the decorator is covered
+    without anyone remembering to add it here. Reads a slowapi internal, which is
+    why it lives in the suite: an upgrade that moves it fails loudly in CI rather
+    than leaving `/docs` quietly wrong.
+    """
+    limited = deps.limiter._dynamic_route_limits
+    return {
+        route.path
+        for route in main.app.routes
+        if (endpoint := getattr(route, "endpoint", None)) is not None
+        and f"{endpoint.__module__}.{endpoint.__name__}" in limited
+    }
+
+
+def test_every_throttled_route_says_it_can_refuse():
+    """A route that can answer 429 without documenting it surprises its caller.
+
+    The throttle is applied by a decorator and documented by hand, so the two can
+    drift apart silently — nothing in FastAPI relates them. Deprecated routes are
+    exempt for the same reason as above.
+    """
+    paths = _throttled_paths()
+    assert paths, "no throttled route found; the limiter registry moved"
+
+    silent = [
+        f"{method.upper()} {path}"
+        for path, operations in main.app.openapi()["paths"].items()
+        if path in paths
+        for method, operation in operations.items()
+        if not operation.get("deprecated") and "429" not in operation.get("responses", {})
+    ]
+
+    assert not silent, f"throttled routes that do not document 429: {silent}"

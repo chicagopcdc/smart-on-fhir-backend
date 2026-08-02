@@ -9,15 +9,15 @@ and quietly double the effective limit.
 
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, HTTPException, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import ErrorResponse
+from app.api.schemas import refusal
 from app.auth.models import AppSession
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -48,31 +48,36 @@ def fhir_rate_limit() -> str:
 # What a throttled route answers, for the OpenAPI document. Declared beside the
 # limiter so a route that adds the decorator has the matching documentation to
 # hand, rather than reaching into another router for it.
-RATE_LIMITED = {
-    "model": ErrorResponse,
-    "description": "Too many requests from this client. `Retry-After` says when to "
-    "come back.",
-}
+RATE_LIMITED = refusal(
+    "Too many requests from this client. `Retry-After` says when to come back."
+)
 
 
-def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    """Answer a throttled request the way the rest of the API answers a refusal.
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    """Add ``Retry-After`` to a throttled request's refusal.
 
-    slowapi's own handler renders ``{"error": …}``, which would leave 429 as the
-    one status whose body a caller has to special-case: every other refusal here
-    is an ``HTTPException``, so it arrives as ``{"detail": …}``.
+    This exists for the header, not for the body. ``RateLimitExceeded`` is
+    already an ``HTTPException``, so FastAPI would render it as ``{"detail": …}``
+    on its own; it is slowapi's *handler* that answers ``{"error": …}``, and
+    registering this one in its place is what keeps 429 from being the single
+    status a caller has to special-case. Rendering is delegated back to FastAPI
+    rather than rebuilt, so there is one definition of what a refusal looks like.
 
-    ``Retry-After`` is set from the limit's own window rather than by turning on
-    slowapi's ``headers_enabled``. That flag also injects headers into successful
+    The window comes from the limit itself rather than from slowapi's
+    ``headers_enabled``. That flag also injects headers into *successful*
     responses, which it does by reaching for a ``response`` argument on the
-    endpoint — so every throttled route would have to take a parameter it has no
-    other use for, or raise on the way out. One full window is a conservative
-    answer, and being early is the failure a caller can absorb.
+    endpoint — so every throttled route would need a parameter it has no other
+    use for, and one answering a Pydantic model raises on the way out instead of
+    returning. A full window is conservative: coming back early is the failure a
+    caller can absorb.
     """
-    return JSONResponse(
-        {"detail": f"Rate limit exceeded: {exc.detail}"},
-        status_code=429,
-        headers={"Retry-After": str(exc.limit.limit.get_expiry())},
+    return await http_exception_handler(
+        request,
+        HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {exc.detail}",
+            headers={"Retry-After": str(exc.limit.limit.get_expiry())},
+        ),
     )
 
 

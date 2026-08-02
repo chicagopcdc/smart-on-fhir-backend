@@ -3,13 +3,14 @@ national endpoint list it can be pointed at."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from app.api.schemas import (
     ConfiguredProvider,
     ProviderSearchResponse,
     ProviderSearchRow,
+    refusal,
 )
 from app.providers import config, lantern
 
@@ -35,7 +36,7 @@ def _configured_by_issuer() -> dict[str, str]:
     "/providers/search",
     response_model=ProviderSearchResponse,
     summary="Search the national list of FHIR endpoints",
-    responses={503: {"description": "No endpoint data is available to serve"}},
+    responses={503: refusal("No endpoint data is available to serve")},
 )
 async def search_providers(
     query: str = Query(
@@ -77,9 +78,10 @@ async def search_providers(
     if not data:
         # Only reachable if the source is unavailable and no provider is
         # configured, since the fallback seeds the dataset from the configured
-        # providers. A normal response rather than an uncaught error, so CORS
-        # headers still attach.
-        return JSONResponse({"detail": UNAVAILABLE}, status_code=503)
+        # providers. Raised, not returned: what costs a response its CORS headers
+        # is going unhandled, and an HTTPException is handled inside the
+        # middleware stack, so this keeps them and the API's one refusal shape.
+        raise HTTPException(status_code=503, detail=UNAVAILABLE)
 
     matches = lantern.search(data, query=query, vendor=vendor, smart_only=smart_only)
     configured = _configured_by_issuer()

@@ -30,7 +30,7 @@ from app.api.schemas import (
     Connection,
     ConnectRequest,
     ConnectResponse,
-    ErrorResponse,
+    refusal,
 )
 from app.auth.models import AppSession, OAuthState
 from app.core.config import get_settings
@@ -129,11 +129,11 @@ async def _begin_authorization(
     response_model=ConnectResponse,
     summary="Start connecting a patient to a provider",
     responses={
-        400: {"model": ErrorResponse, "description": "Unknown provider, or an issuer that provider is not registered for"},
-        401: {"model": ErrorResponse, "description": "A session was presented but is invalid or expired"},
+        400: refusal("Unknown provider, or an issuer that provider is not registered for"),
+        401: refusal("A session was presented but is invalid or expired"),
         429: RATE_LIMITED,
-        502: {"model": ErrorResponse, "description": "The server's SMART configuration could not be read"},
-        503: {"model": ErrorResponse, "description": "The provider has no credentials configured in this deployment"},
+        502: refusal("The server's SMART configuration could not be read"),
+        503: refusal("The provider has no credentials configured in this deployment"),
     },
 )
 @limiter.limit(auth_rate_limit)
@@ -218,9 +218,15 @@ async def start_auth(
     response_model=CallbackResponse,
     summary="Exchange the authorization code for a session",
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid or expired state, a refused exchange, or an authorization with no patient context"},
+        400: refusal(
+            "Invalid or expired state, a refused exchange, or an authorization "
+            "with no patient context"
+        ),
         429: RATE_LIMITED,
-        502: {"model": ErrorResponse, "description": "The provider could not be reached, or requires an unsupported client authentication method"},
+        502: refusal(
+            "The provider could not be reached, or requires an unsupported client "
+            "authentication method"
+        ),
     },
 )
 @limiter.limit(auth_rate_limit)

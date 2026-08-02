@@ -22,6 +22,10 @@ from tests.app_harness import client as _client
 # Matches FRONTEND_HOSTNAME set for the test environment in conftest.
 FRONTEND_ORIGIN = "http://localhost:3000"
 
+# Refused at the allowlist before any discovery or database work, so a test can
+# spend the rate limit without standing up a server to answer.
+UNKNOWN_PROVIDER = {"provider": "NOPE", "iss": "https://example.org/fhir"}
+
 
 @pytest.fixture
 def low_auth_rate_limit(monkeypatch):
@@ -73,11 +77,10 @@ async def test_auth_start_is_rate_limited(low_auth_rate_limit):
     # Unknown provider fails fast with 400, but the request still counts against
     # the limit — so the third call in the window is refused with 429 before any
     # work is done. This shields the discovery/DB path from being hammered.
-    params = {"provider": "NOPE", "iss": "https://example.org/fhir"}
     async with _client() as client:
-        first = await client.get("/auth/start", params=params)
-        second = await client.get("/auth/start", params=params)
-        third = await client.get("/auth/start", params=params)
+        first = await client.get("/auth/start", params=UNKNOWN_PROVIDER)
+        second = await client.get("/auth/start", params=UNKNOWN_PROVIDER)
+        third = await client.get("/auth/start", params=UNKNOWN_PROVIDER)
 
     assert first.status_code == 400
     assert second.status_code == 400
@@ -85,17 +88,22 @@ async def test_auth_start_is_rate_limited(low_auth_rate_limit):
 
 
 @respx.mock
-async def test_the_throttle_leaves_a_route_that_returns_a_model_alone(
+async def test_a_throttled_route_answers_a_model_until_it_refuses(
     low_auth_rate_limit, tmp_path
 ):
-    """A limited route that answers with a Pydantic model still succeeds.
+    """A limited route answering a Pydantic model succeeds, then refuses in shape.
 
-    slowapi hands the endpoint's return value to its header injection, and takes
-    a different branch when that value is not already a ``Response``: it reaches
-    for a ``response`` argument on the endpoint instead, and raises when there is
-    none. So the routes that answer with a model — which is most of them now —
-    fail in a way the ones answering ``JSONResponse`` never do. Worth pinning,
-    because the difference is invisible until the limiter is switched on.
+    Two things that only break together. slowapi hands the endpoint's return
+    value to its header injection and branches on whether it is already a
+    ``Response``, reaching for a ``response`` argument on the endpoint when it is
+    not — so a route answering a model fails where one answering ``JSONResponse``
+    does not (see ``deps.rate_limit_exceeded_handler`` for why that decides how
+    ``Retry-After`` is set). And the refusal itself must read like every other
+    refusal here: ``{"detail": …}``, not slowapi's own ``{"error": …}``.
+
+    Driven against `/auth/connect` rather than the deprecated `/auth/start`,
+    which keeps its original ``{"error": …}`` body and so is the one route that
+    cannot demonstrate the convention.
     """
     async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'throttle.db'}"):
         async with _client() as client:
@@ -110,25 +118,10 @@ async def test_the_throttle_leaves_a_route_that_returns_a_model_alone(
 
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
+
     assert third.status_code == 429
-
-
-async def test_a_throttled_request_is_refused_like_every_other_refusal(
-    low_auth_rate_limit,
-):
-    """429 answers `detail`, not slowapi's own `error`.
-
-    Every other refusal in this API is an ``HTTPException``, so it arrives as
-    ``{"detail": …}``. Leaving the throttle to answer ``{"error": …}`` would make
-    it the one status a client has to special-case, and ``Retry-After`` is what
-    turns a refusal into something a client can act on rather than guess at.
-    """
-    params = {"provider": "NOPE", "iss": "https://example.org/fhir"}
-    async with _client() as client:
-        for _ in range(3):
-            response = await client.get("/auth/start", params=params)
-
-    assert response.status_code == 429
-    assert "error" not in response.json()
-    assert response.json()["detail"].startswith("Rate limit exceeded")
-    assert response.headers["retry-after"] == "60"
+    assert "error" not in third.json()
+    assert third.json()["detail"].startswith("Rate limit exceeded")
+    # The window the limit itself declares, so a caller is told when to return
+    # rather than left to guess.
+    assert third.headers["retry-after"] == "60"

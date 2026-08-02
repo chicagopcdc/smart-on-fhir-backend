@@ -43,6 +43,16 @@ class ErrorResponse(BaseModel):
     detail: str
 
 
+def refusal(description: str) -> dict:
+    """One entry for a route's ``responses``, documenting why it was refused.
+
+    Every refusal this API can answer has the same body, so the only thing that
+    varies per status is the prose. Building the entry here keeps that true:
+    routes name their reasons and never restate the shape.
+    """
+    return {"model": ErrorResponse, "description": description}
+
+
 # --- authorization -----------------------------------------------------------
 
 
