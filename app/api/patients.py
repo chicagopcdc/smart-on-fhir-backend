@@ -6,6 +6,7 @@ FastAPI cannot resolve a stringified annotation back to the type it names.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -29,6 +30,8 @@ from app.auth.models import AppSession, ProviderToken, utcnow
 from app.core.db import connections_for_patient, get_session
 from app.fhir import service, summary
 from app.providers import config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["patients"])
 
@@ -152,17 +155,31 @@ async def _read_all(
         *(_read_connection(token, resource_types) for token in connections),
         return_exceptions=True,
     )
-    return [
-        result
-        if isinstance(result, _ConnectionRead)
-        else _ConnectionRead(
-            token=token,
-            resources={},
-            status="error",
-            error="This provider could not be read",
+
+    reads = []
+    for token, result in zip(connections, results):
+        if isinstance(result, _ConnectionRead):
+            reads.append(result)
+            continue
+        # The caller is told only that the connection failed, so this is the one
+        # record of why. Logged as the exception's type, not its message: httpx
+        # puts the request URL in the message, and ours carry the patient's id at
+        # the provider. The provider key and our own record id are safe to name.
+        logger.error(
+            "Unhandled %s reading %s for %s",
+            type(result).__name__,
+            token.provider,
+            token.patient_id,
         )
-        for token, result in zip(connections, results)
-    ]
+        reads.append(
+            _ConnectionRead(
+                token=token,
+                resources={},
+                status="error",
+                error="This provider could not be read",
+            )
+        )
+    return reads
 
 
 @router.get(

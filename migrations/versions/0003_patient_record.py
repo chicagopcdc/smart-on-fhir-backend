@@ -82,9 +82,13 @@ def upgrade() -> None:
             """
         )
     )
-    # Any session whose connection has since been deleted has nothing to inherit.
-    # It is about to expire on its own, but it cannot be left null, and it must
-    # not be handed a record that exists — that would grant it someone's data.
+    # Any session whose connection has since been deleted has nothing to inherit,
+    # and must not be handed a record that exists — that would grant it someone
+    # else's data. It gets one of its own, which names no connections, so a read
+    # against it 404s: alive until its TTL, reaching nothing.
+    #
+    # Minted rather than deleted because downgrade() only drops the column, so a
+    # row deleted here could not be restored on the way back down.
     orphans = connection.execute(
         sa.text("SELECT session_id FROM app_session WHERE patient_id IS NULL")
     ).fetchall()
