@@ -162,9 +162,11 @@ async def _read_all(
             reads.append(result)
             continue
         # The caller is told only that the connection failed, so this is the one
-        # record of why. Logged as the exception's type, not its message: httpx
-        # puts the request URL in the message, and ours carry the patient's id at
-        # the provider. The provider key and our own record id are safe to name.
+        # record of why. The type and not the message, because what arrives here
+        # is whatever the fetch layer did not model — most likely a validation
+        # error out of normalization, and pydantic quotes the value of the field
+        # that failed, which on a Patient is a name or a date of birth. The
+        # provider key and our own record id are ours to name.
         logger.error(
             "Unhandled %s reading %s for %s",
             type(result).__name__,
