@@ -350,9 +350,6 @@ off them. They are marked deprecated in `/docs`.
 | GET | `/fhir_resources` | `GET /patients/{patientId}/resources` |
 | GET | `/lantern-endpoints` | `GET /providers/search` |
 
-`POST /auth/callback` also still answers `session_id` and `patient` alongside the new
-`sessionId` and `patientId`, for the same reason.
-
 ## Tests
 
 ```bash

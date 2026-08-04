@@ -278,15 +278,25 @@ async def test_a_state_is_consumed_so_a_link_cannot_be_replayed(db_url):
 
 
 @respx.mock
-async def test_the_callback_still_answers_the_names_the_frontend_reads(db_url):
-    """The pre-record keys stay until the frontend and demo have moved off them."""
+async def test_the_callback_answers_these_names_and_no_others(db_url):
+    """The documented shape, with nothing extra alongside it.
+
+    Pinned as a whole key set rather than field by field, so a second spelling of
+    something already here cannot appear without a decision.
+    """
     async with app_db(db_url):
         async with client() as http:
             body = await connect(http, SMART_LAUNCHER, token_response("launcher-p1"))
 
+    assert set(body) == {
+        "success",
+        "patientId",
+        "sessionId",
+        "expiresIn",
+        "connection",
+    }
     assert body["success"] is True
-    assert body["session_id"] == body["sessionId"]
-    assert body["patient"] == body["connection"]["patientFhirId"]
+    assert set(body["connection"]) == {"provider", "iss", "patientFhirId"}
 
 
 @respx.mock

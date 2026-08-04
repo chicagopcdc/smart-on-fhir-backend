@@ -47,7 +47,7 @@ async def _authorize(client) -> str:
     callback = await client.post(
         "/auth/callback", json={"code": "auth-code-123", "state": state}
     )
-    return callback.json()["session_id"]
+    return callback.json()["sessionId"]
 
 
 @respx.mock
@@ -92,9 +92,9 @@ async def test_auth_flow_persists_state_then_consumes_it_and_stores_token(
             assert callback.status_code == 200
             body = callback.json()
             assert body["success"] is True
-            assert body["patient"] == epic_token_response["patient"]
+            assert body["connection"]["patientFhirId"] == epic_token_response["patient"]
             # A session bearer is returned for the frontend to read resources with.
-            assert body["session_id"]
+            assert body["sessionId"]
 
     # The exchange used Basic auth (chosen from discovery) and replayed the verifier.
     exchange = token_route.calls.last.request

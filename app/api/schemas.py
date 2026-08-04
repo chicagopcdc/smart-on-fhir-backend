@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -138,8 +138,6 @@ class CallbackResponse(APIModel):
                         "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
                         "patientFhirId": "erXuFYUfucBZaryVksYEcMg3",
                     },
-                    "session_id": "8kQm2Xb7nHc1RrYl…",
-                    "patient": "erXuFYUfucBZaryVksYEcMg3",
                 }
             ]
         },
@@ -158,32 +156,6 @@ class CallbackResponse(APIModel):
     )
     expires_in: int = Field(description="Seconds until the session expires.")
     connection: Connection
-
-    # The names this endpoint used before it knew about patient records, kept
-    # until the frontend and demo move off them. Computed rather than stored, so
-    # each value has one source.
-    #
-    # Deprecated via json_schema_extra, not pydantic's `deprecated=`: that marks
-    # the property itself and warns on every serialization, filling our logs
-    # while the caller who needs to act on it is across the wire.
-    @computed_field(  # type: ignore[prop-decorator]
-        alias="session_id",
-        description="Deprecated: use `sessionId`.",
-        json_schema_extra={"deprecated": True},
-    )
-    @property
-    def legacy_session_id(self) -> str:
-        return self.session_id
-
-    @computed_field(  # type: ignore[prop-decorator]
-        alias="patient",
-        description="Deprecated: use `connection.patientFhirId`, or `patientId` for "
-        "the record itself.",
-        json_schema_extra={"deprecated": True},
-    )
-    @property
-    def legacy_patient(self) -> str:
-        return self.connection.patient_fhir_id
 
 
 # --- the normalized record ---------------------------------------------------

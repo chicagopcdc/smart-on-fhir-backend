@@ -175,7 +175,7 @@ async def authorize(client: httpx.AsyncClient, server: dict, token_response: dic
         "/auth/callback", json={"code": "test-auth-code", "state": state}
     )
     assert callback.status_code == 200, callback.text
-    return callback.json()["session_id"]
+    return callback.json()["sessionId"]
 
 
 async def connect(
