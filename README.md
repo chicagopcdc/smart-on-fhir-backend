@@ -7,13 +7,62 @@ resources for the connected patient.
 
 ## How it works
 
-1. The frontend sends the patient to `/auth/start`, which redirects them to their EHR to
-   log in and approve access.
-2. The EHR sends them back with a short-lived `code`. The frontend posts that code to
-   `/auth/callback`, and the backend exchanges it for access and refresh tokens.
-3. The tokens are stored encrypted, and the backend returns an opaque `session_id`. The
-   frontend then reads the patient's records through `/fhir_resources`, presenting that
-   session id as a bearer token.
+1. A caller posts a provider and a FHIR base URL to `POST /auth/connect`. The backend
+   validates both, reads the server's SMART configuration, and returns the URL to send
+   the patient to.
+2. The patient logs in and approves access, and the EHR sends them back with a
+   short-lived `code`. The caller posts that code to `POST /auth/callback`, and the
+   backend exchanges it for access and refresh tokens.
+3. The tokens are stored encrypted. What comes back is a `patientId` and an opaque
+   `sessionId`, which reads the record through `GET /patients/{patientId}/resources`
+   and `GET /patients/{patientId}/summary`.
+
+Interactive documentation is at `/docs`.
+
+### Patient records and connections
+
+A stored token is a **connection**: one person, at one provider, on one server. A
+**patient record** is the app-level identity those connections hang off, named by an
+opaque `pat_…` id.
+
+The distinction matters because a FHIR patient id is opaque *per server*. The id Epic
+issues and the id Cerner issues for the same person are unrelated strings, and nothing
+stops two servers from issuing the same one to different people. So the record id is
+ours, which is what makes it safe to put in a URL and what lets a record span providers.
+
+Connecting a second provider while presenting an existing session says "this is the same
+patient as the record I already hold", and the new connection joins it:
+
+```bash
+# First provider: no session presented, so this anchors a new record.
+curl -X POST localhost:8000/auth/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "EPIC_SANDBOX", "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"}'
+
+# Second provider: the session says which record to join.
+curl -X POST localhost:8000/auth/connect \
+  -H "Authorization: Bearer $SESSION_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "CERNER_SANDBOX", "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"}'
+```
+
+Only the person authorizing both can make that claim, so nothing infers it. A bearer
+that is present but invalid is refused rather than ignored, which would quietly split a
+patient's providers across two records.
+
+A session presented at connect time is the **only** thing that places a connection on an
+existing record. Authorizing a provider without one always starts a new record, even when
+the same EHR account is already held under another. That is deliberate: proving control
+of one connection proves nothing about the rest of a record, and the server cannot tell
+whether the caller is the person who assembled it. Rejoining on sight would hand a caller
+every provider linked to that record on the strength of a single login — trivially so on
+a server like the public SMART Launcher, where any caller can select any patient with no
+credentials at all.
+
+The cost is that re-authorizing after a session expires starts a fresh record, and the
+other providers have to be linked again. The same EHR account can therefore be held under
+more than one record, each with its own token. The duplication is what keeps the records
+isolated.
 
 ## SMART providers
 
@@ -45,22 +94,29 @@ No code change is needed — add one entry to `EHR_CONFIGS`:
 2. Add an `EHR_CONFIGS` row with the `client_id`/`client_secret`, the shared
    `redirect_uri`, the `scopes` to request, and an `allowed_issuers` list pinning
    the FHIR base URL(s) the app may authorize against.
-3. Start the flow: `/auth/start?provider=<KEY>&iss=<FHIR base URL>`.
+3. Start the flow: `POST /auth/connect` with `{"provider": "<KEY>", "iss": "<FHIR base URL>"}`.
 
 Endpoints, PKCE, and the client-auth method all come from discovery.
 
 ### Reading resources
 
-`/auth/callback` returns a `session_id` on success. Read resources by presenting
-it as a bearer token — `GET /fhir_resources` with header
-`Authorization: Bearer <session_id>`. The patient is taken from the session, so
-the endpoint does not accept a patient id from the caller: a caller can only reach
-the patient they authenticated as.
+`GET /patients/{patientId}/resources`, with the session as
+`Authorization: Bearer <sessionId>`. The path id is checked against the session, and a
+record the session does not hold is a 404 rather than a 403 — confirming that an id
+exists is itself a leak, and the caller could do nothing with the distinction.
+
+Resources come back **per connection**, not merged. The same person's Condition at two
+hospitals is two resources on two servers, and joining them here would assert something
+the data cannot support. The summary below is the merged view.
 
 #### How much of the record
 
-`?include=us-core` (the default) reads the resources a certified server must
-support. `?include=all` adds every other type in `RESOURCE_FETCH_CONFIG`.
+`?type=Condition&type=Immunization` names the resource types to read; repeat it for
+several. A type the backend does not fetch is a 422 listing the ones it does, rather
+than an empty result that reads as the patient having none of it.
+
+With no `type`, `?include=us-core` (the default) reads the resources a certified server
+must support, and `?include=all` adds every other type in `RESOURCE_FETCH_CONFIG`.
 
 `all` is a diagnostic affordance rather than something a client should read on a
 patient's behalf. Several rows in the long tail are not scoped to a patient
@@ -82,35 +138,43 @@ a logged warning and counted in `skipped`, rather than costing the whole read.
 
 ```jsonc
 {
+  "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
   "include": "us-core",
-  "patient": "erXuFYUfucBZaryVksYEcMg3",
-  "provider": "EPIC_SANDBOX",
-  "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
-  "resources": {
-    "Condition": {
-      "resourceType": "Condition",
-      "status": "ok",         // "error" if the read failed or was not FHIR; keys never change
-      "statusCode": 200,
-      "count": 2,             // entries on this page
-      "total": 17,            // what the server says it holds, null where it does not say
-      "truncated": true,      // there is a next page
-      "skipped": 0,           // resources that would not parse
+  "types": ["Patient", "AllergyIntolerance", "Condition", "..."],
+  "connections": [
+    {
+      "provider": "EPIC_SANDBOX",
+      "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+      "patientFhirId": "erXuFYUfucBZaryVksYEcMg3",
+      "status": "ok",           // "degraded" if some types failed, "error" if all did
       "error": null,
-      "entries": [
-        {
-          "id": "62cf4e59",
+      "resources": {
+        "Condition": {
           "resourceType": "Condition",
-          "title": "Hyperlipidemia",
-          "code": { "system": "http://snomed.info/sct", "code": "55822004", "display": "..." },
-          "status": "active",
-          "date": "2010-03-14",
-          "category": "problem-list-item",
-          "detail": { "verificationStatus": "confirmed", "severity": null, "abatement": null },
-          "resource": { /* the full validated FHIR resource, nulls dropped */ }
+          "status": "ok",       // "error" if the read failed or was not FHIR; keys never change
+          "statusCode": 200,
+          "count": 2,           // entries on this page
+          "total": 17,          // what the server says it holds, null where it does not say
+          "truncated": true,    // there is a next page
+          "skipped": 0,         // resources that would not parse
+          "error": null,
+          "entries": [
+            {
+              "id": "62cf4e59",
+              "resourceType": "Condition",
+              "title": "Hyperlipidemia",
+              "code": { "system": "http://snomed.info/sct", "code": "55822004", "display": "..." },
+              "status": "active",
+              "date": "2010-03-14",
+              "category": "problem-list-item",
+              "detail": { "verificationStatus": "confirmed", "severity": null, "abatement": null },
+              "resource": { /* the full validated FHIR resource, nulls dropped */ }
+            }
+          ]
         }
-      ]
+      }
     }
-  }
+  ]
 }
 ```
 
@@ -124,6 +188,66 @@ The full resource travels with each summary, so nothing the server sent is lost.
 
 One page per resource type is read. `total` and `truncated` report that rather than
 presenting a partial list as a whole one.
+
+### The clinical summary
+
+`GET /patients/{patientId}/summary` reads the same US Core set and folds it into the
+sections a chart is read in: conditions, medications, allergies, immunizations, vital
+signs, labs, procedures, encounters, reports. Here merging across providers is the
+point, so each item carries the `provider` it came from and each section is sorted
+newest first, with undated resources last rather than floated to the top.
+
+`?limit=` caps the items per section (20 by default); a section's `total` still reports
+everything the servers hold. `?provider=` narrows to one connection.
+
+```jsonc
+{
+  "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
+  "generatedAt": "2026-07-26T14:03:11+00:00",
+  "demographics": { "name": "Amy V. Shaw", "gender": "female",
+                    "birthDate": "1987-02-20", "deceased": false,
+                    "sources": ["EPIC_SANDBOX"] },
+  "connections": [
+    { "provider": "EPIC_SANDBOX",   "iss": "...", "patientFhirId": "...",
+      "status": "ok",    "error": null },
+    { "provider": "CERNER_SANDBOX", "iss": "...", "patientFhirId": "...",
+      "status": "error", "error": "No resource could be read from this provider" }
+  ],
+  "sections": [
+    { "key": "conditions", "title": "Conditions", "resourceTypes": ["Condition"],
+      "total": 14,        // across connections; server-claimed where given
+      "returned": 14,     // what fitted in `limit`
+      "items": [ { "provider": "EPIC_SANDBOX", "title": "Hyperlipidemia", "...": "..." } ] }
+  ],
+  "issues": [
+    { "provider": "CERNER_SANDBOX", "type": "Immunization",
+      "error": "Provider returned HTTP 503" }
+  ]
+}
+```
+
+A provider being down does not sink the summary. Its connection is reported as failed,
+what could not be read is listed under `issues`, and the rest of the chart comes back
+as a normal 200. Sections are always present even when empty, so a consumer reads a
+fixed shape rather than probing for keys — and a section that is empty because a read
+failed is distinguishable from one that is empty because the patient has nothing, by
+looking at `issues`.
+
+### Finding a server
+
+`GET /providers/search` searches ONC's daily list of certified FHIR endpoints. Beyond a
+free-text `?query=` over the URL and organization name, it filters on two things the
+published file already carries:
+
+- `?vendor=epic` matches the **certified EHR developer**, which is what separates
+  endpoints served by Epic from organizations that merely have Epic in their name.
+- `?smartOnly=true` keeps the endpoints that served a SMART configuration when ONC last
+  probed them, dropping both outright failures and the ones it could not reach.
+
+Rows carry `configured` and `provider` where this backend holds a registration that can
+authorize against that exact issuer. That is never inferred from the vendor: two
+hospitals running the same EHR are separate tenants with separate logins and separate
+client registrations.
 
 ## Prerequisites
 
@@ -200,13 +324,31 @@ The API is now at http://localhost:8000, with interactive docs at http://localho
 
 ## Endpoints
 
+Full request and response schemas, with examples, are at `/docs`.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/auth/start?provider=&iss=` | Start the OAuth flow. Redirects the browser to the EHR login. |
-| POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns the connected patient's id and a `session_id`. |
-| GET | `/fhir_resources` | Fetch the patient's FHIR resources using the stored token. Requires `Authorization: Bearer <session_id>`. |
-| GET | `/lantern-endpoints?query=&page=&pageSize=` | Search the national list of FHIR endpoints (from ONC Lantern). |
-| GET | `/providers` | The providers this backend is configured for, for the frontend to offer alongside the Lantern list. Each carries the `provider` key `/auth/start` expects. |
+| POST | `/auth/connect` | Start the OAuth flow. Returns the authorization URL to send the patient to. An optional session bearer links the new connection to an existing patient record. |
+| POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns a `patientId`, a `sessionId`, and the connection just made. |
+| GET | `/patients/{patientId}/resources?type=&include=&provider=` | The patient's normalized resources, per connection. Requires `Authorization: Bearer <sessionId>`. |
+| GET | `/patients/{patientId}/summary?limit=&provider=` | A clinical summary merged across the record's connections. Requires the same bearer. |
+| GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
+| GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
+
+Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
+`Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
+`FHIR_RATE_LIMIT`) and can be turned off for local single-user runs.
+
+### Deprecated
+
+These keep working, with their original response shapes, until the frontend has moved
+off them. They are marked deprecated in `/docs`.
+
+| Method | Path | Superseded by |
+| --- | --- | --- |
+| GET | `/auth/start?provider=&iss=` | `POST /auth/connect` |
+| GET | `/fhir_resources` | `GET /patients/{patientId}/resources` |
+| GET | `/lantern-endpoints` | `GET /providers/search` |
 
 ## Tests
 

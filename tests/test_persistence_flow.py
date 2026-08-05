@@ -47,7 +47,7 @@ async def _authorize(client) -> str:
     callback = await client.post(
         "/auth/callback", json={"code": "auth-code-123", "state": state}
     )
-    return callback.json()["session_id"]
+    return callback.json()["sessionId"]
 
 
 @respx.mock
@@ -92,9 +92,9 @@ async def test_auth_flow_persists_state_then_consumes_it_and_stores_token(
             assert callback.status_code == 200
             body = callback.json()
             assert body["success"] is True
-            assert body["patient"] == epic_token_response["patient"]
+            assert body["connection"]["patientFhirId"] == epic_token_response["patient"]
             # A session bearer is returned for the frontend to read resources with.
-            assert body["session_id"]
+            assert body["sessionId"]
 
     # The exchange used Basic auth (chosen from discovery) and replayed the verifier.
     exchange = token_route.calls.last.request
@@ -300,6 +300,7 @@ async def test_resources_reject_an_expired_session(tmp_path):
             session.add(
                 AppSession(
                     session_id="expired-session",
+                    patient_id="pat_p1",
                     patient_fhir_id="p1",
                     provider="EPIC_SANDBOX",
                     iss=ISS,
@@ -359,15 +360,17 @@ async def test_a_session_reads_only_its_own_patient(tmp_path, epic_smart_config)
     assert used_tokens == {"Bearer token-A"}
 
 
-async def test_persist_token_updates_the_existing_identity(db_session):
+async def test_persist_token_updates_the_connection_within_its_record(db_session):
+    """Re-storing a connection the caller holds replaces its token in place."""
     identity = {"provider": "EPIC_SANDBOX", "iss": ISS}
-    await persist_token(
+    first = await persist_token(
         db_session,
         **identity,
         token_set=TokenSet(access_token="first", patient="p1", scope="scope-1"),
     )
     await persist_token(
         db_session,
+        patient_id=first.patient_id,
         **identity,
         token_set=TokenSet(access_token="second", patient="p1", scope="scope-2"),
     )
@@ -376,3 +379,29 @@ async def test_persist_token_updates_the_existing_identity(db_session):
     assert len(rows) == 1
     assert rows[0].access_token == "second"
     assert rows[0].scope == "scope-2"
+
+
+async def test_persist_token_without_a_record_never_joins_an_existing_one(db_session):
+    """The same EHR account stored twice with no record named is two records.
+
+    Naming no record means the caller proved control of this connection and
+    nothing else. Reusing the record the account already sits under would hand
+    them whatever else was linked to it.
+    """
+    identity = {"provider": "EPIC_SANDBOX", "iss": ISS}
+    first = await persist_token(
+        db_session,
+        **identity,
+        token_set=TokenSet(access_token="first", patient="p1", scope="scope-1"),
+    )
+    second = await persist_token(
+        db_session,
+        **identity,
+        token_set=TokenSet(access_token="second", patient="p1", scope="scope-2"),
+    )
+
+    assert first.patient_id != second.patient_id
+    rows = (await db_session.execute(select(ProviderToken))).scalars().all()
+    assert len(rows) == 2
+    # Each record keeps its own token; neither overwrote the other's.
+    assert {row.access_token for row in rows} == {"first", "second"}

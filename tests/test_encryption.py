@@ -46,6 +46,7 @@ def test_rotated_key_list_still_decrypts_old_ciphertext(monkeypatch):
 
 async def test_encrypted_column_stores_ciphertext(db_session):
     token = ProviderToken(
+        patient_id="pat_patient-123",
         patient_fhir_id="patient-123",
         provider="EPIC_SANDBOX",
         iss="https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",

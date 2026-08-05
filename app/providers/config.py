@@ -40,15 +40,22 @@ EHR_CONFIGS = {
         "client_secret": None,
         "redirect_uri": _redirect_uri,
         "scopes": _DEFAULT_SCOPES,
+        # The launcher carries a standalone launch's context in the aud path
+        # (.../v/r4/sim/<base64 options>/fhir) and refuses one made against the
+        # plain FHIR base with "Invalid launch options". So the issuer offered
+        # here — which is what /providers advertises and a caller connects with —
+        # is the sim form, with an empty options object (base64 "{}"). Empty is
+        # enough: it satisfies the launcher's parse and leaves it to prompt for
+        # the patient, which is what a standalone launch is supposed to do.
         "allowed_issuers": [
-            "https://launch.smarthealthit.org/v/r4/fhir",
+            "https://launch.smarthealthit.org/v/r4/sim/e30/fhir",
         ],
-        # A standalone launch against the launcher encodes its launch context in
-        # the aud path (.../v/r4/sim/<opts>/fhir), so accept any FHIR base under
-        # the launcher's r4 tree in addition to the plain base. Safe as a prefix
-        # only here: this is a public client (no secret is ever sent), the prefix
-        # is same-host, and it ends in "/v/r4/" so a suffix look-alike host such
-        # as "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
+        # Accept any FHIR base under the launcher's r4 tree, so a caller that
+        # builds its own sim options, or uses the plain base for an EHR launch,
+        # still authorizes. Safe as a prefix only here: this is a public client
+        # (no secret is ever sent), the prefix is same-host, and it ends in
+        # "/v/r4/" so a suffix look-alike host such as
+        # "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
         # keep exact-match allowlisting (no prefixes) for tenant isolation.
         "allowed_issuer_prefixes": [
             "https://launch.smarthealthit.org/v/r4/",
@@ -71,9 +78,9 @@ EHR_CONFIGS = {
 def validate_issuer_prefixes(configs: dict) -> None:
     """Fail fast if any provider's ``allowed_issuer_prefixes`` is unsafe.
 
-    Prefix matching in ``start_auth`` widens which issuers a provider may talk to,
-    so it is only safe when two invariants hold — both enforced here rather than
-    left to a comment, so they cannot silently rot as configs change:
+    Prefix matching where an authorization begins widens which issuers a provider
+    may talk to, so it is only safe when two invariants hold — both enforced here
+    rather than left to a comment, so they cannot silently rot as configs change:
 
     * The provider sends **no client secret**. Prefix matching on a confidential
       client would let its secret reach any host under the prefix.
@@ -113,7 +120,7 @@ def configured_providers() -> list[dict]:
     """The providers this backend can actually authorize against, for the frontend's
     dropdown: one ``{"provider", "iss", "name"}`` entry per allowed issuer.
 
-    Providers with no ``client_id`` are skipped — ``/auth/start`` rejects those as
+    Providers with no ``client_id`` are skipped — ``/auth/connect`` rejects those as
     unconfigured, so offering them would be a dead end. Derived from ``EHR_CONFIGS`` so
     the list never drifts from what we can connect to, and grows automatically as
     providers are added (nothing to keep in sync on the frontend). An issuer is listed
@@ -125,7 +132,7 @@ def configured_providers() -> list[dict]:
             continue
         for iss in ehr.get("allowed_issuers", []):
             if iss:
-                # Canonicalize the same way /auth/start does, so the issuer offered here
+                # Canonicalize the same way /auth/connect does, so the issuer offered here
                 # is exactly the one the allowlist accepts back.
                 iss = iss.rstrip("/")
                 by_issuer.setdefault(
@@ -252,6 +259,18 @@ def validate_us_core_membership(names: frozenset[str], configs: dict) -> None:
 validate_us_core_membership(US_CORE_RESOURCES, RESOURCE_FETCH_CONFIG)
 
 
+# The fetch config's row names as an enum, so a caller naming a resource type
+# that does not exist gets a 422 listing what does, rather than a silently empty
+# result. Derived from the config so the two cannot drift.
+ResourceName = Enum(
+    "ResourceName",
+    {name: name for name in RESOURCE_FETCH_CONFIG},
+    type=str,
+    module=__name__,
+)
+ResourceName.__doc__ = "A resource type a read can ask for."
+
+
 class ResourceTier(str, Enum):
     """How much of a patient's record a read should cover.
 
@@ -276,7 +295,24 @@ def fhir_type_for(entry: dict) -> str:
     return entry["url_template"].strip("/").split("/", 1)[0]
 
 
+def _select(wanted) -> dict:
+    """The named fetch config rows, in the order the config declares them.
+
+    Iterating the config rather than the request keeps a read's shape stable: the
+    same resources come back in the same order however the caller listed them,
+    and a name that matches nothing simply is not there.
+    """
+    wanted = set(wanted)
+    return {name: entry for name, entry in RESOURCE_FETCH_CONFIG.items() if name in wanted}
+
+
 def resources_for(tier: ResourceTier) -> dict:
     """The fetch config rows a read should cover for the requested tier."""
-    wanted = RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
-    return {name: entry for name, entry in RESOURCE_FETCH_CONFIG.items() if name in wanted}
+    return _select(
+        RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
+    )
+
+
+def resources_named(names) -> dict:
+    """The fetch config rows for an explicitly named set of resources."""
+    return _select(names)

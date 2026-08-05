@@ -14,31 +14,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from urllib.parse import parse_qs, urlparse
 
-import httpx
 import pytest
 import respx
 
-from app.providers.config import RESOURCE_FETCH_CONFIG, fhir_type_for
 from tests.app_harness import (
     CERNER_SANDBOX,
     SMART_LAUNCHER,
     load_fixture,
     read_resources,
+    serve_record,
 )
-
-
-# Which fetch config row a FHIR request came from, keyed the way the request
-# identifies itself: the resource type it addresses plus the `category` that
-# separates the Observation searches. Inverted from the config rather than
-# rebuilt from a naming convention, so a row the config spells differently still
-# resolves.
-FETCH_KEYS = {
-    (fhir_type_for(entry), (entry.get("extra_params") or {}).get("category")): name
-    for name, entry in RESOURCE_FETCH_CONFIG.items()
-}
-FHIR_TYPES = {fhir_type for fhir_type, _ in FETCH_KEYS}
 
 LAUNCHER = {**SMART_LAUNCHER, "id": "launcher", "record": "launcher_patient_record.json"}
 # The record was captured from Cerner's open endpoint, which is the
@@ -58,29 +44,6 @@ def _token_response(patient_id: str) -> dict:
     }
 
 
-def _fetch_key(url) -> str | None:
-    """The fetch config row a FHIR request came from."""
-    parsed = urlparse(str(url))
-    resource = next(
-        (segment for segment in reversed(parsed.path.split("/")) if segment in FHIR_TYPES),
-        None,
-    )
-    category = parse_qs(parsed.query).get("category", [None])[0]
-    return FETCH_KEYS.get((resource, category))
-
-
-def _serve_record(record: dict):
-    """Answer each FHIR search with what that server really returned."""
-
-    def responder(request):
-        response = record["responses"].get(_fetch_key(request.url))
-        if response is None:
-            return httpx.Response(404, json={"resourceType": "OperationOutcome", "issue": []})
-        return httpx.Response(response["statusCode"], json=response["body"])
-
-    return responder
-
-
 async def read_record(server: dict, tmp_path, *, record=None, params=None) -> dict:
     """Authorize against a server and read the patient's record back."""
     record = record or load_fixture(server["record"])
@@ -88,7 +51,7 @@ async def read_record(server: dict, tmp_path, *, record=None, params=None) -> di
         server,
         f"sqlite+aiosqlite:///{tmp_path / (server['id'] + '.db')}",
         token_response=_token_response(record["patientId"]),
-        responder=_serve_record(record),
+        responder=serve_record(record),
         params=params,
     )
     assert response.status_code == 200, response.text

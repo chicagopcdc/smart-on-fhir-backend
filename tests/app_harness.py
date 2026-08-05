@@ -19,8 +19,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app import main
 from app.auth.models import Base
 from app.core.db import get_session
+from app.providers.config import RESOURCE_FETCH_CONFIG, fhir_type_for
 
 _FIXTURES = Path(__file__).parent / "fixtures"
+
+# Which fetch config row a FHIR request came from, keyed the way the request
+# identifies itself: the resource type it addresses plus the `category` that
+# separates the Observation searches. Inverted from the config rather than
+# rebuilt from a naming convention, so a row the config spells differently still
+# resolves.
+FETCH_KEYS = {
+    (fhir_type_for(entry), (entry.get("extra_params") or {}).get("category")): name
+    for name, entry in RESOURCE_FETCH_CONFIG.items()
+}
+FHIR_TYPES = {fhir_type for fhir_type, _ in FETCH_KEYS}
 
 
 # The servers the suite drives, described by what the authorization flow needs of
@@ -54,6 +66,51 @@ def load_fixture(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def token_response(patient_id: str, **overrides) -> dict:
+    """What a token endpoint returns for a patient, for a mocked exchange.
+
+    The access token names the patient so a test asserting which credential
+    reached a server can tell one connection's from another's.
+    """
+    return {
+        "access_token": f"access-for-{patient_id}",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "launch/patient patient/*.read",
+        "patient": patient_id,
+        **overrides,
+    }
+
+
+def fetch_key(url) -> str | None:
+    """The fetch config row a FHIR request came from."""
+    parsed = urlparse(str(url))
+    resource = next(
+        (segment for segment in reversed(parsed.path.split("/")) if segment in FHIR_TYPES),
+        None,
+    )
+    category = parse_qs(parsed.query).get("category", [None])[0]
+    return FETCH_KEYS.get((resource, category))
+
+
+def serve_record(record: dict):
+    """Answer each FHIR search with what that server really returned.
+
+    ``record`` is a captured patient record fixture: a patient id and the
+    responses that server gave, keyed by fetch config row.
+    """
+
+    def responder(request):
+        response = record["responses"].get(fetch_key(request.url))
+        if response is None:
+            return httpx.Response(
+                404, json={"resourceType": "OperationOutcome", "issue": []}
+            )
+        return httpx.Response(response["statusCode"], json=response["body"])
+
+    return responder
+
+
 @asynccontextmanager
 async def app_db(url: str):
     """Bind the app to a throwaway database for the duration of a test."""
@@ -81,16 +138,11 @@ def client() -> httpx.AsyncClient:
     )
 
 
-async def authorize(client: httpx.AsyncClient, server: dict, token_response: dict) -> str:
-    """Run the real authorization flow against a mocked server, returning the session id.
+def mock_server(server: dict, token_response: dict) -> None:
+    """Register discovery and the token endpoint for one server.
 
-    Tests that read resources need a persisted token to read them with, and the
-    only way to get one is the flow itself. Registering discovery and the token
-    endpoint here (rather than in each test) keeps those routes ahead of any
-    catch-all a caller adds afterwards, since respx matches in registration order.
-
-    ``server`` is one of the descriptors above. The caller supplies the
-    ``respx.mock`` context.
+    Called before any catch-all a test adds, since respx matches in registration
+    order and a broad FHIR route would otherwise swallow the discovery request.
     """
     respx.get(server["iss"] + "/.well-known/smart-configuration").mock(
         return_value=httpx.Response(200, json=load_fixture(server["smart_config"]))
@@ -98,6 +150,18 @@ async def authorize(client: httpx.AsyncClient, server: dict, token_response: dic
     respx.post(server["token_url"]).mock(
         return_value=httpx.Response(200, json=token_response)
     )
+
+
+async def authorize(client: httpx.AsyncClient, server: dict, token_response: dict) -> str:
+    """Run the real authorization flow against a mocked server, returning the session id.
+
+    Tests that read resources need a persisted token to read them with, and the
+    only way to get one is the flow itself.
+
+    ``server`` is one of the descriptors above. The caller supplies the
+    ``respx.mock`` context.
+    """
+    mock_server(server, token_response)
 
     start = await client.get(
         "/auth/start",
@@ -111,7 +175,38 @@ async def authorize(client: httpx.AsyncClient, server: dict, token_response: dic
         "/auth/callback", json={"code": "test-auth-code", "state": state}
     )
     assert callback.status_code == 200, callback.text
-    return callback.json()["session_id"]
+    return callback.json()["sessionId"]
+
+
+async def connect(
+    client: httpx.AsyncClient,
+    server: dict,
+    token_response: dict,
+    *,
+    link_session: str | None = None,
+) -> dict:
+    """Authorize through /auth/connect, returning the callback's response body.
+
+    The same flow as ``authorize`` through the endpoints the API documents.
+    Passing ``link_session`` presents that session on the connect call, which is
+    how a second provider joins an existing patient record.
+    """
+    mock_server(server, token_response)
+
+    headers = {"Authorization": f"Bearer {link_session}"} if link_session else {}
+    started = await client.post(
+        "/auth/connect",
+        json={"provider": server["provider"], "iss": server["iss"]},
+        headers=headers,
+    )
+    assert started.status_code == 200, started.text
+    state = started.json()["state"]
+
+    callback = await client.post(
+        "/auth/callback", json={"code": "test-auth-code", "state": state}
+    )
+    assert callback.status_code == 200, callback.text
+    return callback.json()
 
 
 async def read_resources(

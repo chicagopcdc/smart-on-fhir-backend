@@ -1,0 +1,424 @@
+"""The API a downstream consumer integrates against, end to end.
+
+Connect a provider, read the record back, summarize it — through the real
+endpoints, against captured responses from two R4 servers that genuinely answer
+differently. Then the part that only exists because a record can span providers:
+connect a second one, and check that a summary still arrives when one of them is
+down.
+
+Discovery, the token endpoint and the FHIR searches are served by respx from
+fixtures; everything between them is the real application.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+import respx
+
+from app.fhir import summary as summary_module
+from tests.app_harness import (
+    CERNER_SANDBOX,
+    SMART_LAUNCHER,
+    app_db,
+    client,
+    connect,
+    load_fixture,
+    mock_server,
+    serve_record,
+    token_response,
+)
+
+LAUNCHER = {**SMART_LAUNCHER, "record": "launcher_patient_record.json"}
+# The record was captured from Cerner's open endpoint, which is the
+# unauthenticated view of the same tenant as the configured issuer, so the data
+# is Oracle Health's while the URL is the one the allowlist authorizes.
+CERNER = {**CERNER_SANDBOX, "record": "cerner_patient_record.json"}
+
+
+def _serve(server: dict, responder) -> None:
+    """Answer this server's FHIR calls, after its auth routes are registered."""
+    respx.get(url__startswith=server["iss"]).mock(side_effect=responder)
+
+
+async def _connect_server(http, server: dict, *, link_session: str | None = None) -> dict:
+    """Authorize one server and start serving its captured record."""
+    record = load_fixture(server["record"])
+    body = await connect(
+        http,
+        server,
+        token_response(record["patientId"]),
+        link_session=link_session,
+    )
+    _serve(server, serve_record(record))
+    return body
+
+
+def _auth(session_id: str) -> dict:
+    return {"Authorization": f"Bearer {session_id}"}
+
+
+@pytest.fixture
+def db_url(tmp_path):
+    return f"sqlite+aiosqlite:///{tmp_path / 'downstream.db'}"
+
+
+# --- reading a record --------------------------------------------------------
+
+
+@respx.mock
+async def test_a_connected_patient_reads_their_record(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            response = await http.get(
+                f"/patients/{connected['patientId']}/resources",
+                headers=_auth(connected["sessionId"]),
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["patientId"] == connected["patientId"]
+    assert body["include"] == "us-core"
+
+    [connection] = body["connections"]
+    assert connection["provider"] == LAUNCHER["provider"]
+    assert connection["patientFhirId"] == connected["connection"]["patientFhirId"]
+    assert connection["status"] == "ok"
+
+    # The envelope the normalization layer produces, arriving intact through the
+    # response model rather than flattened by it.
+    condition = connection["resources"]["Condition"]
+    assert condition["resourceType"] == "Condition"
+    assert condition["status"] == "ok"
+    assert condition["count"] == len(condition["entries"])
+    assert condition["entries"][0]["resource"]["resourceType"] == "Condition"
+
+
+@respx.mock
+async def test_a_read_can_name_the_types_it_wants(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            response = await http.get(
+                f"/patients/{connected['patientId']}/resources",
+                params=[("type", "Condition"), ("type", "Immunization")],
+                headers=_auth(connected["sessionId"]),
+            )
+
+    body = response.json()
+    assert body["types"] == ["Condition", "Immunization"]
+    assert set(body["connections"][0]["resources"]) == {"Condition", "Immunization"}
+
+
+@respx.mock
+async def test_a_type_the_backend_does_not_fetch_is_refused(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            response = await http.get(
+                f"/patients/{connected['patientId']}/resources",
+                params={"type": "NotAResourceType"},
+                headers=_auth(connected["sessionId"]),
+            )
+
+    # A 422 naming the types that exist, rather than an empty result that looks
+    # like the patient simply has none of it.
+    assert response.status_code == 422
+
+
+# --- the summary -------------------------------------------------------------
+
+
+@respx.mock
+async def test_a_summary_reads_as_a_chart(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            response = await http.get(
+                f"/patients/{connected['patientId']}/summary",
+                headers=_auth(connected["sessionId"]),
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    # Every section, in the same order, whether or not this patient has any.
+    assert [section["key"] for section in body["sections"]] == [
+        key for key, _, _ in summary_module.SECTIONS
+    ]
+    assert body["demographics"]["sources"] == [LAUNCHER["provider"]]
+    assert body["demographics"]["birthDate"]
+
+    populated = [s for s in body["sections"] if s["items"]]
+    assert len(populated) >= 4, "the captured record should fill several sections"
+    for section in populated:
+        assert section["returned"] == len(section["items"])
+        assert section["total"] >= section["returned"]
+        # Provenance survives the merge, even with one provider connected.
+        assert {item["provider"] for item in section["items"]} == {LAUNCHER["provider"]}
+
+
+@respx.mock
+async def test_a_summary_orders_each_section_newest_first(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            response = await http.get(
+                f"/patients/{connected['patientId']}/summary",
+                headers=_auth(connected["sessionId"]),
+            )
+
+    for section in response.json()["sections"]:
+        dated = [item["date"] for item in section["items"] if item["date"]]
+        undated = [item["date"] for item in section["items"] if not item["date"]]
+        assert dated == sorted(dated, reverse=True), section["key"]
+        # Undated resources are unknown rather than newest, so they sort last and
+        # cannot push real findings out of a capped section.
+        if undated:
+            assert section["items"][-1]["date"] is None, section["key"]
+
+
+@respx.mock
+async def test_limit_caps_the_items_without_hiding_the_count(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            full = await http.get(
+                f"/patients/{connected['patientId']}/summary",
+                headers=_auth(connected["sessionId"]),
+            )
+            capped = await http.get(
+                f"/patients/{connected['patientId']}/summary",
+                params={"limit": 1},
+                headers=_auth(connected["sessionId"]),
+            )
+
+    by_key = {s["key"]: s for s in full.json()["sections"]}
+    for section in capped.json()["sections"]:
+        assert len(section["items"]) <= 1
+        assert section["returned"] == len(section["items"])
+        # The cap is on what is returned, not on what is reported to exist.
+        assert section["total"] == by_key[section["key"]]["total"]
+
+
+# --- more than one provider --------------------------------------------------
+
+
+@respx.mock
+async def test_a_summary_merges_the_records_two_providers_hold(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            first = await _connect_server(http, LAUNCHER)
+            await _connect_server(http, CERNER, link_session=first["sessionId"])
+
+            response = await http.get(
+                f"/patients/{first['patientId']}/summary",
+                headers=_auth(first["sessionId"]),
+            )
+
+    body = response.json()
+    assert {c["provider"] for c in body["connections"]} == {
+        LAUNCHER["provider"],
+        CERNER["provider"],
+    }
+
+    providers_seen = {
+        item["provider"] for section in body["sections"] for item in section["items"]
+    }
+    assert providers_seen == {LAUNCHER["provider"], CERNER["provider"]}, (
+        "a merged summary should carry findings from both connections"
+    )
+
+
+@respx.mock
+async def test_the_record_read_keeps_the_two_providers_apart(db_url):
+    """Resources stay per connection: two servers, two sets, no invented join."""
+    async with app_db(db_url):
+        async with client() as http:
+            first = await _connect_server(http, LAUNCHER)
+            second = await _connect_server(http, CERNER, link_session=first["sessionId"])
+
+            response = await http.get(
+                f"/patients/{first['patientId']}/resources",
+                headers=_auth(first["sessionId"]),
+            )
+
+    connections = response.json()["connections"]
+    assert len(connections) == 2
+    by_provider = {c["provider"]: c for c in connections}
+    assert (
+        by_provider[LAUNCHER["provider"]]["patientFhirId"]
+        != by_provider[CERNER["provider"]]["patientFhirId"]
+    ), "the two servers identify this person differently, which is the whole point"
+    assert second["patientId"] == first["patientId"]
+
+
+@respx.mock
+async def test_narrowing_to_one_provider_reads_only_that_one(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            first = await _connect_server(http, LAUNCHER)
+            await _connect_server(http, CERNER, link_session=first["sessionId"])
+
+            narrowed = await http.get(
+                f"/patients/{first['patientId']}/resources",
+                params={"provider": CERNER["provider"]},
+                headers=_auth(first["sessionId"]),
+            )
+            # A provider this record has not connected is a question with an
+            # answer, not a missing record: the filter matches nothing and the
+            # response says so.
+            absent = await http.get(
+                f"/patients/{first['patientId']}/resources",
+                params={"provider": "EPIC_SANDBOX"},
+                headers=_auth(first["sessionId"]),
+            )
+
+    assert [c["provider"] for c in narrowed.json()["connections"]] == [CERNER["provider"]]
+    assert absent.status_code == 200
+    assert absent.json()["connections"] == []
+
+
+@respx.mock
+async def test_a_provider_being_down_does_not_sink_the_summary(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            first = await _connect_server(http, LAUNCHER)
+
+            # Cerner authorizes, then stops answering: the state a connection
+            # lands in when a provider has an outage after being connected.
+            cerner_record = load_fixture(CERNER["record"])
+            mock_server(CERNER, token_response(cerner_record["patientId"]))
+            await connect(
+                http,
+                CERNER,
+                token_response(cerner_record["patientId"]),
+                link_session=first["sessionId"],
+            )
+            _serve(CERNER, lambda request: httpx.Response(503, text="down for maintenance"))
+
+            response = await http.get(
+                f"/patients/{first['patientId']}/summary",
+                headers=_auth(first["sessionId"]),
+            )
+
+    # Still a normal answer, not an error: one provider's outage is not the
+    # patient's whole record.
+    assert response.status_code == 200
+    body = response.json()
+
+    health = {c["provider"]: c for c in body["connections"]}
+    assert health[LAUNCHER["provider"]]["status"] == "ok"
+    assert health[CERNER["provider"]]["status"] == "error"
+
+    # What could not be read is named, so a partial summary is visibly partial
+    # rather than looking like a patient with nothing on file.
+    down = [issue for issue in body["issues"] if issue["provider"] == CERNER["provider"]]
+    assert down and all("503" in issue["error"] for issue in down)
+
+    # And the provider that is up still fills the chart.
+    assert any(
+        item["provider"] == LAUNCHER["provider"]
+        for section in body["sections"]
+        for item in section["items"]
+    )
+
+
+@respx.mock
+async def test_one_failing_resource_type_leaves_the_connection_degraded(db_url):
+    """A refusal on one type is not an outage, and is reported as neither."""
+    record = load_fixture(LAUNCHER["record"])
+    record["responses"]["Immunization"] = {
+        "statusCode": 403,
+        "body": {
+            "resourceType": "OperationOutcome",
+            "issue": [{"severity": "error", "diagnostics": "Scope not granted"}],
+        },
+    }
+
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(http, LAUNCHER, token_response(record["patientId"]))
+            _serve(LAUNCHER, serve_record(record))
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/summary",
+                headers=_auth(body["sessionId"]),
+            )
+
+    summary_body = response.json()
+    assert summary_body["connections"][0]["status"] == "degraded"
+    assert {"provider": LAUNCHER["provider"], "type": "Immunization",
+            "error": "Scope not granted"} in summary_body["issues"]
+
+
+# --- who may read what -------------------------------------------------------
+
+
+@respx.mock
+async def test_a_session_cannot_read_another_patients_record(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            mine = await _connect_server(http, LAUNCHER)
+            # A second, unlinked authorization: a different person entirely.
+            theirs = await connect(http, CERNER, token_response("someone-else"))
+
+            for path in ("resources", "summary"):
+                response = await http.get(
+                    f"/patients/{theirs['patientId']}/{path}",
+                    headers=_auth(mine["sessionId"]),
+                )
+                # 404, not 403: confirming the id exists would itself leak.
+                assert response.status_code == 404, path
+                assert response.json()["detail"] == "No such patient record"
+
+
+@respx.mock
+async def test_a_second_caller_on_a_shared_account_reads_only_their_own(db_url):
+    """The record boundary, seen through the endpoint that enforces it.
+
+    Someone authorizes an account another record already holds, presenting no
+    session. They land on a record of their own, so the read shows the one
+    connection they authorized and not the providers the first caller linked
+    alongside it.
+    """
+    async with app_db(db_url):
+        async with client() as http:
+            holder = await _connect_server(http, LAUNCHER)
+            await _connect_server(http, CERNER, link_session=holder["sessionId"])
+
+            # The same launcher account again, with no session presented.
+            record = load_fixture(LAUNCHER["record"])
+            other = await connect(http, LAUNCHER, token_response(record["patientId"]))
+
+            reachable = await http.get(
+                f"/patients/{other['patientId']}/resources",
+                headers=_auth(other["sessionId"]),
+            )
+
+    assert other["patientId"] != holder["patientId"]
+    assert {c["provider"] for c in reachable.json()["connections"]} == {
+        LAUNCHER["provider"]
+    }, "the second caller reached a provider they never authorized"
+
+
+@respx.mock
+async def test_reading_without_a_session_is_refused(db_url):
+    async with app_db(db_url):
+        async with client() as http:
+            connected = await _connect_server(http, LAUNCHER)
+            patient_id = connected["patientId"]
+
+            missing = await http.get(f"/patients/{patient_id}/summary")
+            malformed = await http.get(
+                f"/patients/{patient_id}/summary",
+                headers={"Authorization": "Basic bm90LWEtYmVhcmVy"},
+            )
+            unknown = await http.get(
+                f"/patients/{patient_id}/resources", headers=_auth("not-a-session")
+            )
+
+    assert missing.status_code == 401
+    assert malformed.status_code == 401
+    assert unknown.status_code == 401

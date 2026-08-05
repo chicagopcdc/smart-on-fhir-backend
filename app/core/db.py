@@ -19,7 +19,13 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.auth.models import AppSession, OAuthState, ProviderToken, utcnow
+from app.auth.models import (
+    AppSession,
+    OAuthState,
+    ProviderToken,
+    new_patient_id,
+    utcnow,
+)
 from app.providers.models import TokenSet
 from app.core.config import get_settings
 
@@ -62,26 +68,63 @@ async def delete_expired_sessions(session: AsyncSession) -> int:
     return await _delete_expired(session, AppSession)
 
 
-async def persist_token(
-    session: AsyncSession, *, provider: str, iss: str, token_set: TokenSet
-) -> ProviderToken:
-    """Insert or update the stored token for a patient/provider/issuer.
+async def connections_for_patient(
+    session: AsyncSession, patient_id: str
+) -> list[ProviderToken]:
+    """Every stored connection under one patient record, oldest first.
 
-    The identity triple is unique, so re-authenticating updates the existing row
-    rather than leaving a stale token behind.
+    Ordered by id so a record reads back in the order its connections were made,
+    which keeps a response stable between calls rather than leaving it to the
+    database's choice of plan.
+    """
+    result = await session.execute(
+        select(ProviderToken)
+        .where(ProviderToken.patient_id == patient_id)
+        .order_by(ProviderToken.id)
+    )
+    return list(result.scalars().all())
+
+
+async def persist_token(
+    session: AsyncSession,
+    *,
+    patient_id: str | None = None,
+    provider: str,
+    iss: str,
+    token_set: TokenSet,
+) -> ProviderToken:
+    """Store the token for one connection, under the record it belongs to.
+
+    ``patient_id`` is the record the caller proved they hold, by presenting a
+    live session when the authorization started, and is the only thing that may
+    place a connection on an existing record. Without one the connection anchors
+    a new record even where the same account is already held elsewhere, because
+    the server cannot tell this caller from whoever assembled that record — see
+    ``ProviderToken``. Within a record the connection is unique, so a re-auth the
+    caller does hold updates it in place rather than leaving a stale token.
+
+    Returns the row, so the caller can read back the record it settled on.
     """
     patient_fhir_id = token_set.patient or ""
-    existing = await session.execute(
-        select(ProviderToken).where(
-            ProviderToken.patient_fhir_id == patient_fhir_id,
-            ProviderToken.provider == provider,
-            ProviderToken.iss == iss,
+
+    token = None
+    if patient_id is not None:
+        existing = await session.execute(
+            select(ProviderToken).where(
+                ProviderToken.patient_id == patient_id,
+                ProviderToken.patient_fhir_id == patient_fhir_id,
+                ProviderToken.provider == provider,
+                ProviderToken.iss == iss,
+            )
         )
-    )
-    token = existing.scalar_one_or_none()
+        token = existing.scalar_one_or_none()
+
     if token is None:
         token = ProviderToken(
-            patient_fhir_id=patient_fhir_id, provider=provider, iss=iss
+            patient_id=patient_id or new_patient_id(),
+            patient_fhir_id=patient_fhir_id,
+            provider=provider,
+            iss=iss,
         )
         session.add(token)
 

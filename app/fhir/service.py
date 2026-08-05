@@ -60,18 +60,21 @@ async def fetch_and_normalize(client, url, params, headers, resource_type, fhir_
     )
 
 
-async def fetch_fhir_resources(access_token, base_url, fhir_patient_id, tier):
-    resource_types = config.resources_for(tier)
+async def fetch_fhir_resources(access_token, base_url, fhir_patient_id, resource_types):
+    """Read the named fetch config rows for one patient at one server.
 
+    ``resource_types`` is already resolved, from a tier or from an explicit list,
+    so which slice of the record to read stays a decision the caller makes and
+    this stays the code that reads it.
+    """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/fhir+json"
     }
 
-    # All types are requested at once (ten by default, the whole config for
-    # ?include=all). Cap connections so the widest read does not hit one EHR as a
-    # throttle-worthy burst, and set a timeout so one slow endpoint cannot hold
-    # the request open.
+    # All types are requested at once, which for the widest read is the whole
+    # config. Cap connections so that does not hit one EHR as a throttle-worthy
+    # burst, and set a timeout so one slow endpoint cannot hold the request open.
     limits = httpx.Limits(max_connections=10)
     async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
         tasks = []

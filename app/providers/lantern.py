@@ -7,7 +7,7 @@ never depends on a live fetch to answer a request. It serves an **in-memory data
 is seeded at import from a small curated fallback (the providers this backend is actually
 configured for) and refreshed opportunistically from the mirror's newest available file.
 
-Any upstream failure leaves the last good data in place, so ``/lantern-endpoints`` returns
+Any upstream failure leaves the last good data in place, so ``/providers/search`` returns
 data (200) rather than an uncaught 500 — which matters because a 500 is produced above the
 CORS middleware and would strip ``Access-Control-Allow-Origin``, turning a backend hiccup
 into an opaque browser failure that the frontend then retries in a loop.
@@ -20,6 +20,7 @@ import csv
 import io
 import logging
 import re
+import sys
 import time
 from datetime import date
 
@@ -63,8 +64,22 @@ _FILE_RE = re.compile(r"^(\d{2})_(\d{2})_(\d{4})endpointdata\.csv$")
 
 # The CSV columns we read; the served rows keep only these, under neutral keys, so
 # the endpoint never has to know the source's column names.
+#
+# The vendor is the certified EHR developer, which is a different thing from the
+# organization exposing the endpoint and is what makes a useful search: matching
+# "epic" against organization names finds a few dozen businesses that happen to be
+# named Epic, while matching it against the developer finds the several hundred
+# endpoints Epic actually serves.
+#
+# ONC fetches each endpoint's `.well-known/smart-configuration` when it builds the
+# file, so `smart_http_response` is a daily reachability check we would otherwise
+# have to run ourselves, and the FHIR version says whether our R4 reads apply at
+# all before anyone is sent through a login.
 _SRC_URL = "url"
 _SRC_NAME = "api_information_source_name"
+_SRC_VENDOR = "certified_api_developer_name"
+_SRC_FHIR_VERSION = "capability_fhir_version"
+_SRC_SMART_RESPONSE = "smart_http_response"
 
 
 class LanternSourceError(RuntimeError):
@@ -85,10 +100,22 @@ _lock = asyncio.Lock()
 
 def _curated_fallback() -> list[dict]:
     """The endpoint-list fallback served when the mirror is unreachable: the configured
-    providers projected to the ``{url, name}`` shape ``/lantern-endpoints`` returns, so
-    the dropdown and the connect flow keep working even if the mirror is deleted."""
+    providers projected to the row shape the search returns, so the dropdown and the
+    connect flow keep working even if the mirror is deleted.
+
+    ``smartCapable`` is True because these are the servers this backend already
+    authorizes against, so their SMART configuration is known good. The vendor and
+    FHIR version are unknown rather than guessed: they come from ONC's certification
+    data, and a sandbox is not in it."""
     return [
-        {"url": p["iss"], "name": p["name"]} for p in config.configured_providers()
+        {
+            "url": p["iss"],
+            "name": p["name"],
+            "vendor": None,
+            "fhirVersion": None,
+            "smartCapable": True,
+        }
+        for p in config.configured_providers()
     ]
 
 
@@ -159,19 +186,77 @@ def _resolve_latest_csv(client: httpx.Client) -> tuple[str, date]:
     raise LanternSourceError("no endpoint CSV found in the mirror")
 
 
+def _smart_capable(value: str | None) -> bool | None:
+    """Whether the endpoint served a SMART configuration when ONC last probed it.
+
+    The column holds the HTTP status that probe received. A 0 means the request
+    never completed, which says the endpoint was unreachable rather than that it
+    is not SMART, so it reads as unknown rather than as a no.
+    """
+    if not value or not value.strip().isdigit():
+        return None
+    status = int(value)
+    return True if status == 200 else (None if status == 0 else False)
+
+
 def _parse_csv(text: str) -> list[dict]:
-    """Parse the CSV to ``[{url, name}]``, dropping rows without a url. An empty result
-    means the columns changed (or we fetched an error page), so it is treated as a source
-    failure rather than served as a real list."""
+    """Parse the CSV to the rows we serve, dropping any without a url.
+
+    An empty result means the columns changed (or we fetched an error page), so it
+    is treated as a source failure rather than served as a real list.
+
+    The file runs to tens of thousands of rows and only a few hundred distinct
+    vendors, so vendor strings are interned: without it the wider row would cost a
+    separate copy of the same name for every endpoint that developer certified.
+    """
     reader = csv.DictReader(io.StringIO(text))
     rows = [
-        {"url": row[_SRC_URL], "name": row.get(_SRC_NAME, "")}
+        {
+            "url": row[_SRC_URL],
+            "name": row.get(_SRC_NAME, ""),
+            "vendor": sys.intern(row.get(_SRC_VENDOR) or "") or None,
+            "fhirVersion": sys.intern(row.get(_SRC_FHIR_VERSION) or "") or None,
+            "smartCapable": _smart_capable(row.get(_SRC_SMART_RESPONSE)),
+        }
         for row in reader
         if row.get(_SRC_URL)
     ]
     if not rows:
         raise LanternSourceError("parsed 0 usable rows (unexpected CSV shape?)")
     return rows
+
+
+def search(
+    rows: list[dict],
+    *,
+    query: str = "",
+    vendor: str = "",
+    smart_only: bool = False,
+) -> list[dict]:
+    """Narrow the endpoint list, matching case-insensitively on substrings.
+
+    ``query`` searches the URL and the organization; ``vendor`` searches the
+    certified developer, which is the filter that separates "served by Epic" from
+    "has Epic in its name". ``smart_only`` keeps the endpoints ONC's last probe
+    found serving a SMART configuration, dropping both the outright failures and
+    the ones it could not reach.
+
+    One pass rather than one per filter: the dataset runs to tens of thousands of
+    rows, so a filter per criterion would walk and copy all of them again each
+    time. An unfiltered search returns the dataset itself and copies nothing,
+    which is the common case behind a dropdown's first page.
+    """
+    if not (query or vendor or smart_only):
+        return rows
+
+    q, v = query.lower(), vendor.lower()
+    return [
+        row
+        for row in rows
+        if (not q or q in row["url"].lower() or q in row["name"].lower())
+        and (not v or v in (row.get("vendor") or "").lower())
+        and (not smart_only or row.get("smartCapable"))
+    ]
 
 
 def _fetch_latest_blocking() -> tuple[list[dict], str]:

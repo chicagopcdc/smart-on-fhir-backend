@@ -54,11 +54,11 @@ class StubProvider(FHIRProvider):
 @pytest.fixture(autouse=True)
 def _reset_discovery_cache():
     """Keep the app's shared discovery cache from leaking configs between tests."""
-    from app import main
+    from app.api import deps
 
-    main._discovery.clear()
+    deps.discovery.clear()
     yield
-    main._discovery.clear()
+    deps.discovery.clear()
 
 
 @pytest.fixture
