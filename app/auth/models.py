@@ -185,6 +185,11 @@ class ProviderToken(Base):
     two records, each with its own token. The duplication is the isolation:
     authenticating to a connection proves control of that connection alone, so it
     must not land the caller on a record someone else assembled around it.
+
+    That duplication is also why the row needs ``last_used_at``. A connection
+    deliberately outlives the session that made it, so nothing else on the row
+    says when it stopped being worth keeping, and every abandoned authorization
+    would otherwise stay forever.
     """
 
     __tablename__ = "provider_token"
@@ -210,6 +215,10 @@ class ProviderToken(Base):
     refresh_token: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When a read last reached the record this connection belongs to. Null means
+    # it never has, which is the state every abandoned authorization is left in
+    # and a fact worth keeping rather than flattening into created_at.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow

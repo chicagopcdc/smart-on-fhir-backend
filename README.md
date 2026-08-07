@@ -255,7 +255,7 @@ An access token from a SMART server lasts about an hour. The refresh token store
 it lasts days, and a read spends it: before fetching anything the backend renews a token
 that has run out, or is close enough that the fan-out of FHIR calls after it would not
 finish in time. A server that hands back a *new* refresh token has retired the one it was
-given, so the replacement is stored â€” that is the difference between one working refresh
+given, so the replacement is stored — that is the difference between one working refresh
 and all of them. Concurrent reads of one connection are coalesced so they spend that
 token once between them rather than each replaying it.
 
@@ -275,6 +275,22 @@ Not every failure to renew means the same thing, and the API says which:
 Only the first and third are worth asking a patient to reconnect over. A 503 or a
 rejected client secret says nothing about the patient's authorization, so the stored
 refresh token is kept rather than thrown away over a provider's bad minute.
+
+A connection is removed when nothing can reach it any more. That is not "has no live
+session" — connections are meant to outlive sessions. Two things keep a connection
+outright: a live session on its record, and its own access token for as long as that
+still works. Past those, what decides it is whether the connection could be brought back
+to life:
+
+- One holding a refresh token the provider has not refused can be renewed whenever a read
+  comes, so an expired access token means nothing on its own. It is kept until nothing has
+  read it for `CONNECTION_RETENTION_DAYS`. Reading a record resets that clock across every
+  connection on it, so the window only ever runs out on one nobody is using.
+- One that cannot be renewed was worth exactly its access token, and is now worth nothing.
+
+The sweep runs when an authorization completes, alongside the state and session sweeps, so
+it happens as often as the growth it answers. It reaches no provider: revoking belongs on
+the deliberate path.
 
 ## Prerequisites
 
@@ -314,6 +330,7 @@ Settings are read from the environment, and from `.env` in local development.
 | `OAUTH_STATE_TTL_SECONDS` | no | How long an OAuth state row stays valid before it is swept. Defaults to 600. |
 | `APP_SESSION_TTL_SECONDS` | no | How long a session (the bearer the frontend uses to read resources) stays valid before the caller must re-authorize. Defaults to 3600. |
 | `TOKEN_REFRESH_LEEWAY_SECONDS` | no | How close to its expiry a stored access token may be before a read renews it first. Defaults to 60. |
+| `CONNECTION_RETENTION_DAYS` | no | How long a connection that can still be refreshed is kept after the last time anything read it. Defaults to 30. |
 | `RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT` | no | Per-client throttles for the auth and resource endpoints (slowapi `<count>/<window>` syntax). Defaults `10/minute` and `30/minute`; set `RATE_LIMIT_ENABLED=false` for single-user local runs. |
 | `EPIC_SANDBOX_CLIENT_ID`, `EPIC_SANDBOX_CLIENT_SECRET` | no | Client credentials for the Epic sandbox. Register an app at https://fhir.epic.com to get them. |
 | `EPIC_CLIENT_ID`, `EPIC_CLIENT_SECRET` | no | Client credentials for the production Epic provider. |

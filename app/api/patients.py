@@ -28,7 +28,7 @@ from app.api.schemas import (
 )
 from app.auth import tokens
 from app.auth.models import AppSession, ProviderToken, utcnow
-from app.core.db import connections_for_patient, get_session
+from app.core.db import connections_for_patient, get_session, mark_record_used
 from app.fhir import service, summary
 from app.providers import config
 
@@ -60,8 +60,11 @@ async def _authorized_connections(
     id exists is itself a leak. A record with no connections left answers the
     same, since a record exists only for as long as something hangs off it.
 
-    ``provider`` narrows the result after existence is settled, so a filter
-    matching nothing comes back empty rather than as a missing record.
+    Reaching the record is what keeps it, so this is where that is recorded —
+    across every connection, before ``provider`` narrows the result, since
+    reading one provider does not make the rest of the record abandoned. The
+    filter itself is applied after existence is settled, so one matching nothing
+    comes back empty rather than as a missing record.
     """
     if patient_id != app_session.patient_id:
         raise HTTPException(status_code=404, detail="No such patient record")
@@ -69,6 +72,7 @@ async def _authorized_connections(
     connections = await connections_for_patient(session, patient_id)
     if not connections:
         raise HTTPException(status_code=404, detail="No such patient record")
+    await mark_record_used(session, connections)
 
     if provider is not None:
         connections = [token for token in connections if token.provider == provider]
@@ -385,6 +389,7 @@ async def get_all_resource(
     )
     if token_row is None:
         return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
+    await mark_record_used(session, connections)
 
     try:
         live = await tokens.live_token(token_row)

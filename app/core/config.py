@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # not merely the instant it was inspected.
     token_refresh_leeway_seconds: int = 60
 
+    # How long a connection that can still be refreshed is kept after the last
+    # time anything read it. Reading a record resets this for every connection
+    # on it, so the window only ever runs out on one nobody is using. One that
+    # cannot be refreshed is worth no more than its access token and does not
+    # wait this out. Zero is a usable setting: a live session or a working
+    # access token keeps a connection whatever this is set to.
+    connection_retention_days: int = 30
+
     # Base URL of the frontend that handles the OAuth redirect. The provider
     # registration's redirect_uri is built from this, so it must match what is
     # registered with each EHR.
