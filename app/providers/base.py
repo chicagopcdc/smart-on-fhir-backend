@@ -55,3 +55,15 @@ class FHIRProvider(ABC):
     ) -> TokenSet:
         """Obtain a fresh token set from a refresh token."""
         ...
+
+    @abstractmethod
+    async def revoke_token(
+        self, config: SMARTConfiguration, token: str, *, token_type_hint: str
+    ) -> bool:
+        """Ask the server to invalidate a token, if it offers anywhere to ask.
+
+        Returns whether the revocation actually happened, since most servers
+        publish no revocation endpoint and dropping our copy is then the only
+        thing available. Disconnecting must not depend on the answer either way.
+        """
+        ...

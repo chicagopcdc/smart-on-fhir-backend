@@ -36,6 +36,7 @@ from tests.app_harness import (
     client,
     connect,
     connect_and_serve,
+    form,
     load_fixture,
     refreshes,
     refuse,
@@ -560,6 +561,270 @@ async def test_the_sweep_does_not_call_out_to_a_provider(db_url):
 
     assert LAUNCHER["provider"] not in surviving
     assert refreshes() == [], "the sweep spent a refresh token to make its decision"
+
+
+# --- ending one deliberately ---------------------------------------------------
+#
+# The sweep is what happens to a caller. This is what a caller does: revoked at
+# the EHR where the server offers anywhere to ask, and gone from here either way.
+
+
+def revocation(server: dict):
+    """Register the revocation endpoint that server's discovery document names."""
+    endpoint = load_fixture(server["smart_config"])["revocation_endpoint"]
+    return respx.post(endpoint).mock(return_value=httpx.Response(200))
+
+
+@respx.mock
+async def test_disconnecting_revokes_at_a_provider_that_offers_it(db_url):
+    """Dropping our copy is not the same as ending access.
+
+    Cerner publishes a revocation endpoint, so the grant can be ended where it
+    actually lives. The refresh token is what is offered up: revoking it takes
+    the access tokens issued under the same grant with it.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            first, _ = await connect_and_serve(http, LAUNCHER)
+            await connect_and_serve(http, CERNER, link_session=first["sessionId"])
+            revoked = revocation(CERNER)
+
+            response = await http.delete(
+                f"/patients/{first['patientId']}/connections/{CERNER['provider']}",
+                headers=bearer(first["sessionId"]),
+            )
+
+            # The record survives its other connection, and still reads.
+            still_reading = await http.get(
+                f"/patients/{first['patientId']}/resources",
+                headers=bearer(first["sessionId"]),
+            )
+
+        surviving = {c.provider for c in await stored_connections(factory)}
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "provider": CERNER["provider"],
+        "revokedAtProvider": True,
+        "connectionsRemaining": 1,
+    }
+    assert surviving == {LAUNCHER["provider"]}
+
+    sent = form(revoked.calls.last.request)
+    assert sent["token"] == "refresh-1"
+    assert sent["token_type_hint"] == "refresh_token"
+
+    assert [c["provider"] for c in still_reading.json()["connections"]] == [
+        LAUNCHER["provider"]
+    ]
+
+
+@respx.mock
+async def test_a_connection_with_no_refresh_token_offers_up_the_one_it_has(db_url):
+    """A server that granted no offline_access still leaves something to revoke.
+
+    The refresh token is what gets offered where there is one, because revoking
+    it takes the access tokens issued under the same grant with it. Where there
+    is none, the access token is the whole of what we hold — and it has to go up
+    under its own ``token_type_hint``, or the server is being asked to look for
+    it in the wrong place and the grant quietly outlives the disconnect.
+    """
+    record = load_fixture(CERNER["record"])
+
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            # token_response omits a refresh token, as a server that granted no
+            # offline_access would.
+            connected = await connect(http, CERNER, token_response(record["patientId"]))
+            revoked = revocation(CERNER)
+
+            response = await http.delete(
+                f"/patients/{connected['patientId']}/connections/{CERNER['provider']}",
+                headers=bearer(connected["sessionId"]),
+            )
+
+        assert await count_connections(factory) == 0
+
+    assert response.status_code == 200, response.text
+    assert response.json()["revokedAtProvider"] is True
+    sent = form(revoked.calls.last.request)
+    assert sent["token_type_hint"] == "access_token"
+    assert sent["token"] == f"access-for-{record['patientId']}"
+
+
+@respx.mock
+async def test_disconnecting_a_provider_that_offers_no_revocation_still_works(db_url):
+    """Most SMART servers publish no revocation endpoint, the launcher included.
+
+    There is nothing to be done about that from here, so it is reported rather
+    than treated as a failure. respx would raise on a call to an endpoint that
+    was never registered, which is what shows none was attempted.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            connected, _ = await connect_and_serve(http, LAUNCHER)
+
+            response = await http.delete(
+                f"/patients/{connected['patientId']}/connections/{LAUNCHER['provider']}",
+                headers=bearer(connected["sessionId"]),
+            )
+
+        assert await count_connections(factory) == 0
+
+    assert response.status_code == 200, response.text
+    assert response.json()["revokedAtProvider"] is False
+    assert response.json()["connectionsRemaining"] == 0
+
+
+@respx.mock
+async def test_a_provider_refusing_to_revoke_does_not_keep_a_caller_connected(db_url):
+    """Asking is best effort, and the answer cannot be a veto.
+
+    A caller asked to disconnect, not to find out whether the EHR was reachable.
+    Letting an outage refuse would leave them attached to the server they are
+    trying to leave, which is the one outcome that must not be possible.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            first, _ = await connect_and_serve(http, LAUNCHER)
+            await connect_and_serve(http, CERNER, link_session=first["sessionId"])
+            endpoint = load_fixture(CERNER["smart_config"])["revocation_endpoint"]
+            respx.post(endpoint).mock(side_effect=httpx.ConnectError("unreachable"))
+
+            response = await http.delete(
+                f"/patients/{first['patientId']}/connections/{CERNER['provider']}",
+                headers=bearer(first["sessionId"]),
+            )
+
+        surviving = {c.provider for c in await stored_connections(factory)}
+
+    assert response.status_code == 200, response.text
+    assert response.json()["revokedAtProvider"] is False
+    assert surviving == {LAUNCHER["provider"]}
+
+
+@respx.mock
+async def test_disconnecting_the_last_connection_takes_the_record_with_it(db_url):
+    """A record is its connections, so the session that held it now holds nothing.
+
+    The bearer is rejected rather than resolving to an empty record: a session
+    that reads nothing is a worse answer than a session that is over.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            connected, _ = await connect_and_serve(http, LAUNCHER)
+
+            await http.delete(
+                f"/patients/{connected['patientId']}/connections/{LAUNCHER['provider']}",
+                headers=bearer(connected["sessionId"]),
+            )
+            after = await http.get(
+                f"/patients/{connected['patientId']}/resources",
+                headers=bearer(connected["sessionId"]),
+            )
+
+        async with factory() as session:
+            sessions = await session.execute(select(AppSession))
+
+    assert after.status_code == 401
+    assert sessions.first() is None
+
+
+@respx.mock
+async def test_disconnecting_a_provider_a_record_holds_twice_removes_all_of_it(db_url):
+    """One record can hold one provider more than once.
+
+    A connection is unique on the patient the server named as well as on the
+    server itself, so two of a server's patients can sit on one record — which
+    is what happens when someone connects the same portal for themselves and for
+    a dependant. The request names a provider, not a row, so all of it goes;
+    leaving whichever was found second behind would tell a patient they had
+    disconnected something they had not.
+    """
+    record = load_fixture(LAUNCHER["record"])
+
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            first = await connect(http, LAUNCHER, token_endpoint(record["patientId"]))
+            await connect(
+                http,
+                LAUNCHER,
+                token_endpoint("a-second-patient-at-the-same-server"),
+                link_session=first["sessionId"],
+            )
+            assert await count_connections(factory) == 2
+
+            response = await http.delete(
+                f"/patients/{first['patientId']}/connections/{LAUNCHER['provider']}",
+                headers=bearer(first["sessionId"]),
+            )
+
+        assert await count_connections(factory) == 0
+
+    assert response.status_code == 200, response.text
+    assert response.json()["connectionsRemaining"] == 0
+
+
+@respx.mock
+async def test_disconnecting_the_same_provider_twice_is_not_a_server_fault(db_url):
+    """A repeated disconnect is a client retrying, not something going wrong.
+
+    A double click, or a retry of a request that had in fact already succeeded,
+    puts two requests on the same connection. Each loads it before either
+    deletes it, so the second goes to remove a row that is no longer there.
+    Asking for something to be gone that is already gone is a request that got
+    what it wanted, and the caller should not be told the server broke.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            first, _ = await connect_and_serve(http, LAUNCHER)
+            path = f"/patients/{first['patientId']}/connections/{LAUNCHER['provider']}"
+
+            both = await asyncio.gather(
+                *(http.delete(path, headers=bearer(first["sessionId"])) for _ in range(2))
+            )
+
+        assert await count_connections(factory) == 0
+
+    statuses = [response.status_code for response in both]
+    assert set(statuses) <= {200, 404}, f"a repeated disconnect answered {statuses}"
+    # Whichever did the removing says so; neither reports a connection still there.
+    for response in both:
+        if response.status_code == 200:
+            assert response.json()["connectionsRemaining"] == 0
+
+
+@respx.mock
+async def test_a_session_cannot_disconnect_a_record_it_does_not_hold(db_url):
+    """The same boundary the reads enforce, on the route that destroys things.
+
+    404 rather than 403, for the same reason: confirming the id exists would
+    itself be the leak.
+    """
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            mine, _ = await connect_and_serve(http, LAUNCHER)
+            theirs = await connect(http, CERNER, token_endpoint("someone-else"))
+
+            trespass = await http.delete(
+                f"/patients/{theirs['patientId']}/connections/{CERNER['provider']}",
+                headers=bearer(mine["sessionId"]),
+            )
+            # And a provider that is simply not on the caller's own record.
+            absent = await http.delete(
+                f"/patients/{mine['patientId']}/connections/EPIC_SANDBOX",
+                headers=bearer(mine["sessionId"]),
+            )
+            unauthenticated = await http.delete(
+                f"/patients/{mine['patientId']}/connections/{LAUNCHER['provider']}"
+            )
+
+        assert await count_connections(factory) == 2, "a refused request deleted something"
+
+    assert trespass.status_code == 404
+    assert trespass.json()["detail"] == "No such patient record"
+    assert absent.status_code == 404
+    assert unauthenticated.status_code == 401
 
 
 @respx.mock

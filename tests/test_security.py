@@ -58,6 +58,30 @@ async def test_cors_allows_the_configured_frontend_origin():
     assert response.headers.get("access-control-allow-origin") == FRONTEND_ORIGIN
 
 
+async def test_cors_allows_the_methods_the_api_actually_answers():
+    """A route the preflight refuses is a route a browser can never reach.
+
+    Worth pinning per method rather than assuming: the failure is silent from
+    the endpoint's side, since the request never arrives at all.
+    """
+    async with _client() as client:
+        preflights = {
+            method: await client.options(
+                "/patients/pat_example/connections/EPIC_SANDBOX",
+                headers={
+                    "Origin": FRONTEND_ORIGIN,
+                    "Access-Control-Request-Method": method,
+                    "Access-Control-Request-Headers": "authorization",
+                },
+            )
+            for method in ("GET", "POST", "DELETE")
+        }
+
+    for method, response in preflights.items():
+        assert response.headers.get("access-control-allow-origin") == FRONTEND_ORIGIN, method
+        assert method in response.headers.get("access-control-allow-methods", ""), method
+
+
 async def test_cors_rejects_an_unknown_origin():
     async with _client() as client:
         response = await client.options(

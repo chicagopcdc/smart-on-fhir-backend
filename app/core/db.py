@@ -144,6 +144,49 @@ async def delete_dead_connections(session: AsyncSession) -> int:
     return result.rowcount or 0
 
 
+async def delete_connections(
+    session: AsyncSession, connections: list[ProviderToken]
+) -> int:
+    """Remove these connections, and the record with them if none are left.
+
+    Takes a list because a record can hold one provider more than once: the
+    identity a connection is unique on includes the patient the server named, so
+    two of a server's patients can sit on one record. Disconnecting a provider
+    means all of it, not whichever row happened to be found first.
+
+    Returns how many connections the record has left. Zero means the record is
+    gone, so the sessions naming it are dropped too: they can no longer reach
+    anything, and a bearer that resolves but reads nothing is worse than one
+    that is simply rejected.
+
+    Deleted by primary key rather than through the instances, so that two callers
+    disconnecting the same connection at once is the ordinary outcome it should
+    be. The instance form asserts that exactly one row was removed and complains
+    when the other request got there first, which is a retry doing what a retry
+    does rather than anything having gone wrong.
+    """
+    patient_id = connections[0].patient_id
+    await session.execute(
+        delete(ProviderToken).where(
+            ProviderToken.id.in_([connection.id for connection in connections])
+        )
+    )
+    await session.flush()
+
+    remaining = await session.execute(
+        select(func.count())
+        .select_from(ProviderToken)
+        .where(ProviderToken.patient_id == patient_id)
+    )
+    left = remaining.scalar_one()
+    if left == 0:
+        await session.execute(
+            delete(AppSession).where(AppSession.patient_id == patient_id)
+        )
+    await session.commit()
+    return left
+
+
 # How stale a connection's last-read stamp may get before a read refreshes it.
 # The only thing that reads the stamp is the sweep, which measures in days, so
 # recording every individual read would buy precision nothing consumes — and it

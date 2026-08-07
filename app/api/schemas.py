@@ -354,6 +354,24 @@ class Demographics(APIModel):
     )
 
 
+class DisconnectResponse(APIModel):
+    """What became of a connection a caller asked to end."""
+
+    provider: str = Field(examples=["EPIC_SANDBOX"])
+    revoked_at_provider: bool = Field(
+        description="Whether the token was invalidated at the EHR as well as "
+        "dropped here. False where the server publishes no revocation endpoint, "
+        "which most do not, or where it could not be reached — the connection is "
+        "removed either way."
+    )
+    connections_remaining: int = Field(
+        description="Connections still on this patient record. Zero means the "
+        "record went with this one, and the session that held it no longer "
+        "reaches anything.",
+        examples=[1],
+    )
+
+
 class SummaryIssue(APIModel):
     """A resource type that could not be read, named by connection."""
 

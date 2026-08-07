@@ -10,15 +10,23 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import RATE_LIMITED, fhir_rate_limit, get_current_session, limiter
+from app.api.deps import (
+    RATE_LIMITED,
+    auth_rate_limit,
+    fhir_rate_limit,
+    get_current_session,
+    limiter,
+)
 from app.api.schemas import (
     ConnectionHealth,
     ConnectionResources,
     Demographics,
+    DisconnectResponse,
     ResourceEnvelope,
     ResourcesResponse,
     SummaryIssue,
@@ -28,9 +36,16 @@ from app.api.schemas import (
 )
 from app.auth import tokens
 from app.auth.models import AppSession, ProviderToken, utcnow
-from app.core.db import connections_for_patient, get_session, mark_record_used
+from app.core.db import (
+    connections_for_patient,
+    delete_connections,
+    get_session,
+    mark_record_used,
+)
 from app.fhir import service, summary
-from app.providers import config
+from app.providers import config, registry
+from app.providers.discovery import SMARTDiscoveryError
+from app.providers.generic import SMARTProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +366,93 @@ async def read_summary(
             for issue in summary.collect_issues(per_connection)
         ],
     )
+
+
+@router.delete(
+    "/patients/{patientId}/connections/{provider}",
+    response_model=DisconnectResponse,
+    summary="Disconnect a provider from a patient record",
+    responses={
+        401: UNAUTHORIZED,
+        404: refusal("No such record, or that provider is not connected to it"),
+        429: RATE_LIMITED,
+    },
+)
+@limiter.limit(auth_rate_limit)
+async def disconnect_provider(
+    request: Request,
+    patient_id: str = PATIENT_ID,
+    provider: str = Path(
+        description="The connection to end, as it appears on the record.",
+        examples=["EPIC_SANDBOX"],
+    ),
+    app_session: AppSession = Depends(get_current_session),
+    session: AsyncSession = Depends(get_session),
+):
+    """End one provider's connection to this record, and revoke it at the EHR.
+
+    Cleanup otherwise only happens to a caller: connections are retired once
+    nothing can reach them, which is a slow answer to "stop reading my chart".
+    This is the deliberate one.
+
+    Where the server publishes a revocation endpoint the stored token is
+    invalidated there too, so access ends at the EHR rather than only in this
+    database. Most servers publish none, and one that does may be down, so the
+    connection is removed regardless — a provider having a bad day must not be
+    able to keep a patient connected to it.
+
+    Removing a record's last connection removes the record, and the session that
+    held it stops resolving.
+    """
+    connections = await _authorized_connections(
+        patient_id, app_session, session, provider
+    )
+    if not connections:
+        raise HTTPException(status_code=404, detail="No such connection on this record")
+
+    # A record can hold one provider more than once — a connection is unique on
+    # the patient the server named as well as on the server — and the request
+    # named the provider, so all of it goes.
+    revoked = [await _revoke_at_provider(connection) for connection in connections]
+    remaining = await delete_connections(session, connections)
+
+    return DisconnectResponse(
+        provider=provider,
+        # Only true where every one of them ended at the EHR as well as here.
+        # Claiming otherwise would tell a patient their access was withdrawn
+        # somewhere it is still standing.
+        revoked_at_provider=all(revoked),
+        connections_remaining=remaining,
+    )
+
+
+async def _revoke_at_provider(connection: ProviderToken) -> bool:
+    """Ask the EHR to invalidate this connection's token, and never insist.
+
+    The refresh token where there is one, since revoking it takes the access
+    tokens issued under the same grant with it; the access token otherwise.
+
+    Every failure here is swallowed on purpose. The caller asked to disconnect,
+    not to find out whether the provider was reachable, and letting an outage
+    refuse the request would leave them connected to a server they are trying to
+    leave. What is lost is only the remote half — our copy goes either way.
+    """
+    token, hint = (
+        (connection.refresh_token, "refresh_token")
+        if connection.refresh_token is not None
+        else (connection.access_token, "access_token")
+    )
+    try:
+        adapter = registry.for_connection(connection.provider, connection.iss)
+        config = await adapter.discover(connection.iss)
+        return await adapter.revoke_token(config, token, token_type_hint=hint)
+    except (
+        registry.ProviderNotConfigured,
+        SMARTDiscoveryError,
+        SMARTProviderError,
+        httpx.HTTPError,
+    ):
+        return False
 
 
 @router.get(

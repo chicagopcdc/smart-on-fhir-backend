@@ -292,6 +292,12 @@ The sweep runs when an authorization completes, alongside the state and session 
 it happens as often as the growth it answers. It reaches no provider: revoking belongs on
 the deliberate path.
 
+`DELETE /patients/{patientId}/connections/{provider}` is that path. It revokes the token
+at the EHR where the server publishes a `revocation_endpoint` (RFC 7009), and removes the
+connection whether or not that succeeded — a provider being down must not be able to keep
+a patient connected to it. Removing a record's last connection removes the record, and the
+session that held it stops resolving.
+
 ## Prerequisites
 
 - Python 3.10 or newer
@@ -377,6 +383,7 @@ Full request and response schemas, with examples, are at `/docs`.
 | POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns a `patientId`, a `sessionId`, and the connection just made. |
 | GET | `/patients/{patientId}/resources?type=&include=&provider=` | The patient's normalized resources, per connection. Requires `Authorization: Bearer <sessionId>`. |
 | GET | `/patients/{patientId}/summary?limit=&provider=` | A clinical summary merged across the record's connections. Requires the same bearer. |
+| DELETE | `/patients/{patientId}/connections/{provider}` | Disconnect one provider, revoking at the EHR where it offers a revocation endpoint. Removes the record with its last connection. Requires the same bearer. |
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
 

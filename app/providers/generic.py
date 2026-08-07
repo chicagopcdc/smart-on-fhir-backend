@@ -175,6 +175,33 @@ class GenericSMARTProvider(FHIRProvider):
         body = {"grant_type": "refresh_token", "refresh_token": refresh_token}
         return await self._post_token(config, body)
 
+    async def revoke_token(
+        self, config: SMARTConfiguration, token: str, *, token_type_hint: str
+    ) -> bool:
+        """Invalidate a token at the server, where the server offers a way to.
+
+        RFC 7009. Most SMART servers publish no ``revocation_endpoint``, and
+        there is nothing to be done about that from here, so a False return is a
+        normal outcome rather than a failure. A 200 covers both a token that was
+        revoked and one the server did not recognize, which is deliberate in the
+        spec: distinguishing them would let a client probe for valid tokens.
+
+        Revoking a refresh token is the one worth asking for — a server that
+        supports it SHOULD invalidate the access tokens issued under the same
+        grant along with it.
+        """
+        if config.revocation_endpoint is None:
+            return False
+
+        auth, extra_fields = self._client_authentication(config)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                str(config.revocation_endpoint),
+                data={"token": token, "token_type_hint": token_type_hint, **extra_fields},
+                auth=auth,
+            )
+        return response.status_code == 200
+
     async def _post_token(
         self, config: SMARTConfiguration, body: dict[str, str]
     ) -> TokenSet:

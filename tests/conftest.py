@@ -50,6 +50,9 @@ class StubProvider(FHIRProvider):
     async def refresh_token(self, config, refresh_token) -> TokenSet:
         raise NotImplementedError
 
+    async def revoke_token(self, config, token, *, token_type_hint) -> bool:
+        raise NotImplementedError
+
 
 @pytest.fixture(autouse=True)
 def _reset_discovery_cache():
