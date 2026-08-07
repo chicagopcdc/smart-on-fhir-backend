@@ -23,7 +23,6 @@ from app.api.deps import (
     auth_rate_limit,
     get_optional_session,
     limiter,
-    provider_for,
 )
 from app.api.schemas import (
     CallbackResponse,
@@ -43,6 +42,7 @@ from app.core.db import (
 from app.providers import config
 from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError, TokenExchangeError
+from app.providers.registry import provider_for
 
 router = APIRouter(tags=["authorization"])
 
@@ -315,8 +315,10 @@ async def handle_callback(
         iss=iss,
         ttl_seconds=ttl,
     )
-    # Fold an expired-session sweep into the commit that persists this one, so the
-    # table stays tidy without adding a write to the resource read path.
+    # Fold the sweeps into the commit that persists this session, so the tables
+    # stay tidy without adding a write to the resource read path. Authorizing is
+    # also the event that creates the rows being swept, so the cleanup runs
+    # exactly as often as the growth does, and needs no scheduler to do it.
     await delete_expired_sessions(session)
     session.add(app_session)
     await session.commit()

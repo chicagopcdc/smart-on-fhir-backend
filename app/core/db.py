@@ -10,8 +10,6 @@ operations the endpoints build on.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import timedelta
-
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -23,6 +21,7 @@ from app.auth.models import (
     AppSession,
     OAuthState,
     ProviderToken,
+    expiry_from,
     new_patient_id,
     utcnow,
 )
@@ -131,10 +130,6 @@ async def persist_token(
     token.access_token = token_set.access_token
     token.refresh_token = token_set.refresh_token
     token.scope = token_set.scope
-    token.expires_at = (
-        utcnow() + timedelta(seconds=token_set.expires_in)
-        if token_set.expires_in is not None
-        else None
-    )
+    token.expires_at = expiry_from(token_set.expires_in)
     await session.commit()
     return token

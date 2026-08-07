@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # re-authorize. Default one hour.
     app_session_ttl_seconds: int = 3600
 
+    # How close to its expiry a stored access token may be before a read
+    # refreshes it first. Zero would leave every read racing the clock it just
+    # checked: the token has to survive the fan-out of FHIR calls that follows,
+    # not merely the instant it was inspected.
+    token_refresh_leeway_seconds: int = 60
+
     # Base URL of the frontend that handles the OAuth redirect. The provider
     # registration's redirect_uri is built from this, so it must match what is
     # registered with each EHR.

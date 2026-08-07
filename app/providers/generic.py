@@ -40,7 +40,65 @@ class TokenExchangeError(SMARTProviderError):
     Raised for protocol-level failures (a non-2xx status, a non-JSON body, or a
     response missing an ``access_token``). Transport failures surface as the
     underlying ``httpx.HTTPError`` so the caller can tell the two apart.
+
+    What the server actually said is carried on the exception rather than only
+    written into its message, because one failure among these means something
+    categorically different from the rest: RFC 6749 §5.2 spends ``invalid_grant``
+    on a grant that will never work again, while a 503 says nothing about the
+    grant at all. A caller that treated them alike would throw away a working
+    refresh token every time a provider had a bad minute.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        oauth_error: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.oauth_error = oauth_error
+
+    @property
+    def grant_is_gone(self) -> bool:
+        """True where the server said this authorization is finished.
+
+        The error code carries the meaning and the status only corroborates it.
+        RFC 6749 §5.2 pairs ``invalid_grant`` with a 400, but servers do not
+        always: the SMART App Launcher answers a dead refresh token with a 401,
+        and reading that as "we could not ask" would tell a patient to retry
+        something that will never work again, and keep a spent secret on the row
+        while it waited.
+
+        Requiring the code rather than the status is also what keeps the
+        distinction that matters. A 401 saying ``invalid_client`` is our
+        credentials being wrong, not the patient's authorization being over, and
+        must never cost anyone their connection. The 4xx bound is the last
+        guard: a server error is never a statement about a grant.
+        """
+        if self.oauth_error != "invalid_grant":
+            return False
+        return self.status_code is not None and 400 <= self.status_code < 500
+
+
+def _oauth_error(payload: object) -> str | None:
+    """The ``error`` code out of an OAuth error response, where there is one.
+
+    RFC 6749 §5.2 puts it in a JSON object. A server answering with HTML, with
+    a bare string, or with nothing has not told us which failure this is, and
+    None says so. Takes the parsed body rather than the response so that a body
+    which is read on one path and unreadable on another is judged the same way.
+    """
+    return payload.get("error") if isinstance(payload, dict) else None
+
+
+def _parsed(response: httpx.Response) -> object | None:
+    """The response body as JSON, or None where it is not JSON at all."""
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
 
 class GenericSMARTProvider(FHIRProvider):
@@ -126,20 +184,25 @@ class GenericSMARTProvider(FHIRProvider):
                 str(config.token_endpoint), data={**body, **extra_fields}, auth=auth
             )
 
+        payload = _parsed(response)
         if response.status_code != 200:
             raise TokenExchangeError(
-                f"token endpoint returned HTTP {response.status_code}"
+                f"token endpoint returned HTTP {response.status_code}",
+                status_code=response.status_code,
+                oauth_error=_oauth_error(payload),
             )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise TokenExchangeError("token endpoint returned a non-JSON body") from exc
+        if payload is None:
+            raise TokenExchangeError(
+                "token endpoint returned a non-JSON body", status_code=200
+            )
         try:
             return TokenSet.model_validate(payload)
         except ValidationError as exc:
             # A 200 without an access_token — e.g. an OAuth error object.
             raise TokenExchangeError(
-                "token endpoint response lacked a usable access token"
+                "token endpoint response lacked a usable access token",
+                status_code=200,
+                oauth_error=_oauth_error(payload),
             ) from exc
 
     def _client_authentication(

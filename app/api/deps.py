@@ -1,4 +1,4 @@
-"""What every router needs: the session guard, the throttle, and the provider factory.
+"""What every router needs: the session guard and the throttle.
 
 These live in one module rather than in ``main`` so the routers can import them
 without importing the application, which would be circular. The single shared
@@ -21,8 +21,6 @@ from app.api.schemas import refusal
 from app.auth.models import AppSession
 from app.core.config import get_settings
 from app.core.db import get_session
-from app.providers.discovery import SMARTDiscovery
-from app.providers.generic import GenericSMARTProvider
 
 # Throttle per client IP. The auth endpoints trigger outbound discovery and DB
 # writes, and the resource endpoints fan out to many FHIR calls, so both are
@@ -78,26 +76,6 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
             detail=f"Rate limit exceeded: {exc.detail}",
             headers={"Retry-After": str(exc.limit.limit.get_expiry())},
         ),
-    )
-
-
-# One discovery cache shared across requests: re-authorizing the same issuer
-# reuses its SMART configuration instead of re-fetching it each time.
-discovery = SMARTDiscovery()
-
-
-def provider_for(ehr: dict, iss: str) -> GenericSMARTProvider:
-    """Build the discovery-driven provider for one provider/issuer connection.
-
-    The token is bound to the issuer the app intends to call, so aud is the
-    issuer, never a hardcoded server.
-    """
-    return GenericSMARTProvider(
-        client_id=ehr["client_id"],
-        client_secret=ehr.get("client_secret"),
-        redirect_uri=ehr["redirect_uri"],
-        aud=iss.rstrip("/"),
-        discovery=discovery,
     )
 
 

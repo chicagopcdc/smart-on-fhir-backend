@@ -249,6 +249,33 @@ authorize against that exact issuer. That is never inferred from the vendor: two
 hospitals running the same EHR are separate tenants with separate logins and separate
 client registrations.
 
+### How long a connection lasts
+
+An access token from a SMART server lasts about an hour. The refresh token stored beside
+it lasts days, and a read spends it: before fetching anything the backend renews a token
+that has run out, or is close enough that the fan-out of FHIR calls after it would not
+finish in time. A server that hands back a *new* refresh token has retired the one it was
+given, so the replacement is stored â€” that is the difference between one working refresh
+and all of them. Concurrent reads of one connection are coalesced so they spend that
+token once between them rather than each replaying it.
+
+Concurrent reads are coalesced within one process, the same scope the rate limiter works
+at. A deployment running more than one worker should put that on a lock the workers
+share, since a server that treats a replayed refresh token as theft revokes the whole
+grant rather than just the second call.
+
+Not every failure to renew means the same thing, and the API says which:
+
+| What happened | `status` | `needsReauthorization` |
+| --- | --- | --- |
+| The provider refused the refresh (`invalid_grant`) | `error` | `true` |
+| The token endpoint was unreachable, or answered a 5xx | `error` | `false` |
+| The token ran out and there was no refresh token to spend | `error` | `true` |
+
+Only the first and third are worth asking a patient to reconnect over. A 503 or a
+rejected client secret says nothing about the patient's authorization, so the stored
+refresh token is kept rather than thrown away over a provider's bad minute.
+
 ## Prerequisites
 
 - Python 3.10 or newer
@@ -286,6 +313,7 @@ Settings are read from the environment, and from `.env` in local development.
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated browser origins allowed to call the API. Defaults to `FRONTEND_HOSTNAME`. A wildcard is not supported. |
 | `OAUTH_STATE_TTL_SECONDS` | no | How long an OAuth state row stays valid before it is swept. Defaults to 600. |
 | `APP_SESSION_TTL_SECONDS` | no | How long a session (the bearer the frontend uses to read resources) stays valid before the caller must re-authorize. Defaults to 3600. |
+| `TOKEN_REFRESH_LEEWAY_SECONDS` | no | How close to its expiry a stored access token may be before a read renews it first. Defaults to 60. |
 | `RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT` | no | Per-client throttles for the auth and resource endpoints (slowapi `<count>/<window>` syntax). Defaults `10/minute` and `30/minute`; set `RATE_LIMIT_ENABLED=false` for single-user local runs. |
 | `EPIC_SANDBOX_CLIENT_ID`, `EPIC_SANDBOX_CLIENT_SECRET` | no | Client credentials for the Epic sandbox. Register an app at https://fhir.epic.com to get them. |
 | `EPIC_CLIENT_ID`, `EPIC_CLIENT_SECRET` | no | Client credentials for the production Epic provider. |

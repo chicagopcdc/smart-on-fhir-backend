@@ -22,6 +22,17 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def expiry_from(expires_in: int | None) -> datetime | None:
+    """An absolute expiry from an OAuth ``expires_in``, or None where unstated.
+
+    A token response carries a lifetime in seconds; a stored token needs a point
+    in time, since it is read back long after the response arrived. RFC 6749 only
+    recommends ``expires_in``, so a server may leave it out, and None is what
+    "this server did not say" looks like on the row.
+    """
+    return utcnow() + timedelta(seconds=expires_in) if expires_in is not None else None
+
+
 def new_patient_id() -> str:
     """Mint an identifier for a patient record; see ``ProviderToken`` for why.
 

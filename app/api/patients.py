@@ -26,6 +26,7 @@ from app.api.schemas import (
     SummarySection,
     refusal,
 )
+from app.auth import tokens
 from app.auth.models import AppSession, ProviderToken, utcnow
 from app.core.db import connections_for_patient, get_session
 from app.fhir import service, summary
@@ -75,6 +76,36 @@ async def _authorized_connections(
 
 
 @dataclass(frozen=True)
+class _Refusal:
+    """Why a connection came back empty, and whether reconnecting would help.
+
+    The two travel together because they are one judgement about one outcome.
+    Pairing them by hand at each place a read can fail is how they would come to
+    disagree — a wording telling the patient to reconnect beside a flag saying
+    nothing is wrong.
+    """
+
+    error: str
+    needs_reauthorization: bool = False
+
+
+# The first two are the provider's answer about the authorization itself; the
+# rest are our own reading of what came back.
+REVOKED = _Refusal("This connection is no longer authorized; reconnect this provider", True)
+UNRENEWABLE = _Refusal(
+    "This provider could not be reached to renew access; try again shortly"
+)
+EXPIRED = _Refusal("The stored token has expired; reconnect this provider", True)
+UNREADABLE = _Refusal("No resource could be read from this provider")
+UNMODELLED = _Refusal("This provider could not be read")
+
+
+def _refusal_for(error: tokens.TokenRefreshError) -> _Refusal:
+    """How a failure to renew a token reads to whoever asked for the record."""
+    return REVOKED if isinstance(error, tokens.ReauthorizationRequired) else UNRENEWABLE
+
+
+@dataclass(frozen=True)
 class _ConnectionRead:
     """One connection's read, and how completely it came back.
 
@@ -86,6 +117,20 @@ class _ConnectionRead:
     resources: dict
     status: str
     error: str | None
+    needs_reauthorization: bool = False
+
+    @classmethod
+    def refused(
+        cls, token: ProviderToken, refusal: _Refusal, resources: dict | None = None
+    ) -> "_ConnectionRead":
+        """A connection that answered nothing, and the one reason it did not."""
+        return cls(
+            token,
+            resources or {},
+            "error",
+            refusal.error,
+            needs_reauthorization=refusal.needs_reauthorization,
+        )
 
     @property
     def reported(self) -> dict:
@@ -96,6 +141,7 @@ class _ConnectionRead:
             "patient_fhir_id": self.token.patient_fhir_id,
             "status": self.status,
             "error": self.error,
+            "needs_reauthorization": self.needs_reauthorization,
         }
 
     @property
@@ -110,11 +156,19 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     """Read one connection, and say how completely it could be read.
 
     The issuer is the FHIR base URL, so it is also the base for resource calls.
-    The access token is read from storage (decrypted by the ORM) rather than
-    taken from the URL, so a bearer token never travels as a query parameter.
+    The access token comes from storage (decrypted by the ORM) rather than from
+    the URL, so a bearer token never travels as a query parameter — and it is
+    renewed here first where it would otherwise lapse partway through the fan-out
+    below, which is why the token used is the one ``live_token`` hands back and
+    not the one still on the row.
     """
+    try:
+        live = await tokens.live_token(token)
+    except tokens.TokenRefreshError as exc:
+        return _ConnectionRead.refused(token, _refusal_for(exc))
+
     resources = await service.fetch_fhir_resources(
-        token.access_token, token.iss, token.patient_fhir_id, resource_types
+        live.access_token, token.iss, token.patient_fhir_id, resource_types
     )
 
     failed = [
@@ -123,22 +177,16 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
         if envelope.get("status") != "ok"
     ]
     if not failed:
-        status, error = "ok", None
-    elif len(failed) < len(resources):
-        status, error = "degraded", None
-    else:
-        status = "error"
-        # Nothing came back at all. An expired token is by far the likeliest
-        # reason and the only one the caller can act on, so say so rather than
-        # repeating whichever refusal the provider happened to word first.
-        expired = token.expires_at is not None and token.expires_at <= utcnow()
-        error = (
-            "The stored token has expired; reconnect this provider"
-            if expired
-            else "No resource could be read from this provider"
-        )
+        return _ConnectionRead(token, resources, "ok", None)
+    if len(failed) < len(resources):
+        return _ConnectionRead(token, resources, "degraded", None)
 
-    return _ConnectionRead(token=token, resources=resources, status=status, error=error)
+    # Nothing came back at all. A token that has run out with nothing to renew
+    # it from is by far the likeliest reason and the only one the caller can act
+    # on, so say so rather than repeating whichever refusal the provider
+    # happened to word first.
+    expired = live.expires_at is not None and live.expires_at <= utcnow()
+    return _ConnectionRead.refused(token, EXPIRED if expired else UNREADABLE, resources)
 
 
 async def _read_all(
@@ -173,14 +221,7 @@ async def _read_all(
             token.provider,
             token.patient_id,
         )
-        reads.append(
-            _ConnectionRead(
-                token=token,
-                resources={},
-                status="error",
-                error="This provider could not be read",
-            )
-        )
+        reads.append(_ConnectionRead.refused(token, UNMODELLED))
     return reads
 
 
@@ -345,8 +386,15 @@ async def get_all_resource(
     if token_row is None:
         return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
 
+    try:
+        live = await tokens.live_token(token_row)
+    except tokens.TokenRefreshError as exc:
+        # This shape predates per-connection reporting, so it carries the wording
+        # without the flag beside it that says whether reconnecting would help.
+        return JSONResponse({"error": _refusal_for(exc).error}, status_code=502)
+
     resources = await service.fetch_fhir_resources(
-        token_row.access_token,
+        live.access_token,
         token_row.iss,
         app_session.patient_fhir_id,
         config.resources_for(include),
