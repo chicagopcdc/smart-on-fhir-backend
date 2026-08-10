@@ -7,17 +7,22 @@ the flow tests share one definition instead of each carrying their own copy.
 
 from __future__ import annotations
 
+import itertools
 import json
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import respx
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import main
-from app.auth.models import Base
+from app.auth.models import Base, ProviderToken, utcnow
+from app.core import db
 from app.core.db import get_session
 from app.providers.config import RESOURCE_FETCH_CONFIG, fhir_type_for
 
@@ -35,9 +40,11 @@ FETCH_KEYS = {
 FHIR_TYPES = {fhir_type for fhir_type, _ in FETCH_KEYS}
 
 
-# The servers the suite drives, described by what the authorization flow needs of
-# them. Held here so that re-registering a sandbox, or a vendor moving its token
-# endpoint, is one edit rather than one per test module.
+# The servers the suite drives, described by what the flow needs of them: where
+# to authorize, where to exchange, what its discovery document says, and — where
+# one was captured — the record it really answered a read with. Held here so that
+# re-registering a sandbox, or a vendor moving its token endpoint, is one edit
+# rather than one per test module.
 EPIC_SANDBOX = {
     "provider": "EPIC_SANDBOX",
     "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
@@ -51,6 +58,7 @@ SMART_LAUNCHER = {
     "authorize_url": "https://launch.smarthealthit.org/v/r4/auth/authorize",
     "token_url": "https://launch.smarthealthit.org/v/r4/auth/token",
     "smart_config": "smarthealthit_smart_config.json",
+    "record": "launcher_patient_record.json",
 }
 CERNER_SANDBOX = {
     "provider": "CERNER_SANDBOX",
@@ -58,6 +66,10 @@ CERNER_SANDBOX = {
     "authorize_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/protocols/oauth2/profiles/smart-v1/personas/provider/authorize",
     "token_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/hosts/fhir-ehr-code.cerner.com/protocols/oauth2/profiles/smart-v1/token",
     "smart_config": "cerner_smart_config.json",
+    # Captured from Cerner's open endpoint, which is the unauthenticated view of
+    # the same tenant as the configured issuer, so the data is Oracle Health's
+    # while the URL is the one the allowlist authorizes.
+    "record": "cerner_patient_record.json",
 }
 
 
@@ -124,9 +136,17 @@ async def app_db(url: str):
             yield session
 
     main.app.dependency_overrides[get_session] = override_get_session
+    # Not every session belongs to a request. A token refresh opens its own, so
+    # that it commits a rotated refresh token whatever becomes of the request
+    # that triggered it, and it reaches for the module-level factory rather than
+    # the dependency. Point that at this database too, or those writes land in
+    # the process-wide one.
+    process_factory = db.SessionFactory
+    db.SessionFactory = factory
     try:
         yield factory
     finally:
+        db.SessionFactory = process_factory
         main.app.dependency_overrides.clear()
         await engine.dispose()
 
@@ -138,18 +158,24 @@ def client() -> httpx.AsyncClient:
     )
 
 
-def mock_server(server: dict, token_response: dict) -> None:
+def mock_server(server: dict, token_response: dict | Callable) -> None:
     """Register discovery and the token endpoint for one server.
 
     Called before any catch-all a test adds, since respx matches in registration
     order and a broad FHIR route would otherwise swallow the discovery request.
+
+    ``token_response`` is the body an exchange answers with, or a responder
+    called with each request, for tests where one endpoint has to answer a
+    later call — a refresh — differently from the exchange before it.
     """
     respx.get(server["iss"] + "/.well-known/smart-configuration").mock(
         return_value=httpx.Response(200, json=load_fixture(server["smart_config"]))
     )
-    respx.post(server["token_url"]).mock(
-        return_value=httpx.Response(200, json=token_response)
-    )
+    route = respx.post(server["token_url"])
+    if callable(token_response):
+        route.mock(side_effect=token_response)
+    else:
+        route.mock(return_value=httpx.Response(200, json=token_response))
 
 
 async def authorize(client: httpx.AsyncClient, server: dict, token_response: dict) -> str:
@@ -181,7 +207,7 @@ async def authorize(client: httpx.AsyncClient, server: dict, token_response: dic
 async def connect(
     client: httpx.AsyncClient,
     server: dict,
-    token_response: dict,
+    token_response: dict | Callable,
     *,
     link_session: str | None = None,
 ) -> dict:
@@ -207,6 +233,113 @@ async def connect(
     )
     assert callback.status_code == 200, callback.text
     return callback.json()
+
+
+async def connect_and_serve(
+    client: httpx.AsyncClient,
+    server: dict,
+    *,
+    on_refresh=None,
+    link_session: str | None = None,
+) -> tuple[dict, respx.Route]:
+    """Authorize one server, then start answering its FHIR calls from its record.
+
+    Returns the callback body and the FHIR route, which is where a test looks to
+    see which credential the reads actually carried.
+    """
+    record = load_fixture(server["record"])
+    body = await connect(
+        client,
+        server,
+        token_endpoint(record["patientId"], on_refresh=on_refresh),
+        link_session=link_session,
+    )
+    # Registered after connect() so the discovery route keeps priority.
+    route = respx.get(url__startswith=server["iss"]).mock(side_effect=serve_record(record))
+    return body, route
+
+
+# --- the token endpoint over a connection's whole life -------------------------
+
+
+def token_endpoint(patient_id: str, *, on_refresh=None) -> Callable:
+    """One server's token endpoint, serving both an exchange and every refresh.
+
+    It rotates: each answer carries a new refresh token, which is what a server
+    that retires the one it was handed does. That makes storing the replacement
+    the difference between one working refresh and all of them, and the numbering
+    is what lets a test say which token was spent when.
+
+    ``on_refresh`` takes over the answer to a refresh, and is handed the issuer
+    so a test wanting a *successful* but wrong one can still get a live body.
+    """
+    issued = itertools.count(1)
+
+    def granted(**overrides) -> dict:
+        nth = next(issued)
+        return token_response(
+            patient_id,
+            access_token=f"access-{nth}",
+            refresh_token=f"refresh-{nth}",
+            **overrides,
+        )
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if form(request)["grant_type"] == "refresh_token" and on_refresh is not None:
+            return on_refresh(granted)
+        return httpx.Response(200, json=granted())
+
+    return responder
+
+
+def refuse(_granted) -> httpx.Response:
+    """The token endpoint saying this authorization is finished, per RFC 6749."""
+    return httpx.Response(400, json={"error": "invalid_grant"})
+
+
+def refreshes(server: dict | None = None) -> list[dict[str, str]]:
+    """Every refresh asked of a token endpoint so far, as the form body sent.
+
+    Read off respx's own call log rather than tracked by the responder, so it
+    counts what actually left the application rather than what a fake believes
+    it was asked for.
+    """
+    return [
+        form(call.request)
+        for call in respx.calls
+        if call.request.method == "POST"
+        and b"grant_type=refresh_token" in call.request.content
+        and (server is None or str(call.request.url) == server["token_url"])
+    ]
+
+
+# --- reading and moving what is stored -----------------------------------------
+
+
+def bearer(session_id: str) -> dict:
+    """The header a caller presents to read the record a session holds."""
+    return {"Authorization": f"Bearer {session_id}"}
+
+
+def form(request: httpx.Request) -> dict[str, str]:
+    """A posted form body, flattened, for saying what was actually sent."""
+    return {key: values[0] for key, values in parse_qs(request.content.decode()).items()}
+
+
+async def age_tokens(factory, *, to=None) -> None:
+    """Move every stored expiry, the way an hour of wall clock would have."""
+    async with factory() as session:
+        await session.execute(
+            update(ProviderToken).values(expires_at=to or utcnow() - timedelta(seconds=1))
+        )
+        await session.commit()
+
+
+async def stored_connections(factory) -> list[ProviderToken]:
+    """Every connection in the database, oldest first."""
+    async with factory() as session:
+        result = await session.execute(select(ProviderToken).order_by(ProviderToken.id))
+        return list(result.scalars().all())
 
 
 async def read_resources(

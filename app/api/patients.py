@@ -10,15 +10,23 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import RATE_LIMITED, fhir_rate_limit, get_current_session, limiter
+from app.api.deps import (
+    RATE_LIMITED,
+    auth_rate_limit,
+    fhir_rate_limit,
+    get_current_session,
+    limiter,
+)
 from app.api.schemas import (
     ConnectionHealth,
     ConnectionResources,
     Demographics,
+    DisconnectResponse,
     ResourceEnvelope,
     ResourcesResponse,
     SummaryIssue,
@@ -26,10 +34,18 @@ from app.api.schemas import (
     SummarySection,
     refusal,
 )
+from app.auth import tokens
 from app.auth.models import AppSession, ProviderToken, utcnow
-from app.core.db import connections_for_patient, get_session
+from app.core.db import (
+    connections_for_patient,
+    delete_connections,
+    get_session,
+    mark_record_used,
+)
 from app.fhir import service, summary
-from app.providers import config
+from app.providers import config, registry
+from app.providers.discovery import SMARTDiscoveryError
+from app.providers.generic import SMARTProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +75,11 @@ async def _authorized_connections(
     id exists is itself a leak. A record with no connections left answers the
     same, since a record exists only for as long as something hangs off it.
 
-    ``provider`` narrows the result after existence is settled, so a filter
-    matching nothing comes back empty rather than as a missing record.
+    Reaching the record is what keeps it, so this is where that is recorded —
+    across every connection, before ``provider`` narrows the result, since
+    reading one provider does not make the rest of the record abandoned. The
+    filter itself is applied after existence is settled, so one matching nothing
+    comes back empty rather than as a missing record.
     """
     if patient_id != app_session.patient_id:
         raise HTTPException(status_code=404, detail="No such patient record")
@@ -68,10 +87,41 @@ async def _authorized_connections(
     connections = await connections_for_patient(session, patient_id)
     if not connections:
         raise HTTPException(status_code=404, detail="No such patient record")
+    await mark_record_used(session, connections)
 
     if provider is not None:
         connections = [token for token in connections if token.provider == provider]
     return connections
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """Why a connection came back empty, and whether reconnecting would help.
+
+    The two travel together because they are one judgement about one outcome.
+    Pairing them by hand at each place a read can fail is how they would come to
+    disagree — a wording telling the patient to reconnect beside a flag saying
+    nothing is wrong.
+    """
+
+    error: str
+    needs_reauthorization: bool = False
+
+
+# The first two are the provider's answer about the authorization itself; the
+# rest are our own reading of what came back.
+REVOKED = _Refusal("This connection is no longer authorized; reconnect this provider", True)
+UNRENEWABLE = _Refusal(
+    "This provider could not be reached to renew access; try again shortly"
+)
+EXPIRED = _Refusal("The stored token has expired; reconnect this provider", True)
+UNREADABLE = _Refusal("No resource could be read from this provider")
+UNMODELLED = _Refusal("This provider could not be read")
+
+
+def _refusal_for(error: tokens.TokenRefreshError) -> _Refusal:
+    """How a failure to renew a token reads to whoever asked for the record."""
+    return REVOKED if isinstance(error, tokens.ReauthorizationRequired) else UNRENEWABLE
 
 
 @dataclass(frozen=True)
@@ -86,6 +136,20 @@ class _ConnectionRead:
     resources: dict
     status: str
     error: str | None
+    needs_reauthorization: bool = False
+
+    @classmethod
+    def refused(
+        cls, token: ProviderToken, refusal: _Refusal, resources: dict | None = None
+    ) -> "_ConnectionRead":
+        """A connection that answered nothing, and the one reason it did not."""
+        return cls(
+            token,
+            resources or {},
+            "error",
+            refusal.error,
+            needs_reauthorization=refusal.needs_reauthorization,
+        )
 
     @property
     def reported(self) -> dict:
@@ -96,6 +160,7 @@ class _ConnectionRead:
             "patient_fhir_id": self.token.patient_fhir_id,
             "status": self.status,
             "error": self.error,
+            "needs_reauthorization": self.needs_reauthorization,
         }
 
     @property
@@ -110,11 +175,19 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     """Read one connection, and say how completely it could be read.
 
     The issuer is the FHIR base URL, so it is also the base for resource calls.
-    The access token is read from storage (decrypted by the ORM) rather than
-    taken from the URL, so a bearer token never travels as a query parameter.
+    The access token comes from storage (decrypted by the ORM) rather than from
+    the URL, so a bearer token never travels as a query parameter — and it is
+    renewed here first where it would otherwise lapse partway through the fan-out
+    below, which is why the token used is the one ``live_token`` hands back and
+    not the one still on the row.
     """
+    try:
+        live = await tokens.live_token(token)
+    except tokens.TokenRefreshError as exc:
+        return _ConnectionRead.refused(token, _refusal_for(exc))
+
     resources = await service.fetch_fhir_resources(
-        token.access_token, token.iss, token.patient_fhir_id, resource_types
+        live.access_token, token.iss, token.patient_fhir_id, resource_types
     )
 
     failed = [
@@ -123,22 +196,16 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
         if envelope.get("status") != "ok"
     ]
     if not failed:
-        status, error = "ok", None
-    elif len(failed) < len(resources):
-        status, error = "degraded", None
-    else:
-        status = "error"
-        # Nothing came back at all. An expired token is by far the likeliest
-        # reason and the only one the caller can act on, so say so rather than
-        # repeating whichever refusal the provider happened to word first.
-        expired = token.expires_at is not None and token.expires_at <= utcnow()
-        error = (
-            "The stored token has expired; reconnect this provider"
-            if expired
-            else "No resource could be read from this provider"
-        )
+        return _ConnectionRead(token, resources, "ok", None)
+    if len(failed) < len(resources):
+        return _ConnectionRead(token, resources, "degraded", None)
 
-    return _ConnectionRead(token=token, resources=resources, status=status, error=error)
+    # Nothing came back at all. A token that has run out with nothing to renew
+    # it from is by far the likeliest reason and the only one the caller can act
+    # on, so say so rather than repeating whichever refusal the provider
+    # happened to word first.
+    expired = live.expires_at is not None and live.expires_at <= utcnow()
+    return _ConnectionRead.refused(token, EXPIRED if expired else UNREADABLE, resources)
 
 
 async def _read_all(
@@ -173,14 +240,7 @@ async def _read_all(
             token.provider,
             token.patient_id,
         )
-        reads.append(
-            _ConnectionRead(
-                token=token,
-                resources={},
-                status="error",
-                error="This provider could not be read",
-            )
-        )
+        reads.append(_ConnectionRead.refused(token, UNMODELLED))
     return reads
 
 
@@ -308,6 +368,93 @@ async def read_summary(
     )
 
 
+@router.delete(
+    "/patients/{patientId}/connections/{provider}",
+    response_model=DisconnectResponse,
+    summary="Disconnect a provider from a patient record",
+    responses={
+        401: UNAUTHORIZED,
+        404: refusal("No such record, or that provider is not connected to it"),
+        429: RATE_LIMITED,
+    },
+)
+@limiter.limit(auth_rate_limit)
+async def disconnect_provider(
+    request: Request,
+    patient_id: str = PATIENT_ID,
+    provider: str = Path(
+        description="The connection to end, as it appears on the record.",
+        examples=["EPIC_SANDBOX"],
+    ),
+    app_session: AppSession = Depends(get_current_session),
+    session: AsyncSession = Depends(get_session),
+):
+    """End one provider's connection to this record, and revoke it at the EHR.
+
+    Cleanup otherwise only happens to a caller: connections are retired once
+    nothing can reach them, which is a slow answer to "stop reading my chart".
+    This is the deliberate one.
+
+    Where the server publishes a revocation endpoint the stored token is
+    invalidated there too, so access ends at the EHR rather than only in this
+    database. Most servers publish none, and one that does may be down, so the
+    connection is removed regardless — a provider having a bad day must not be
+    able to keep a patient connected to it.
+
+    Removing a record's last connection removes the record, and the session that
+    held it stops resolving.
+    """
+    connections = await _authorized_connections(
+        patient_id, app_session, session, provider
+    )
+    if not connections:
+        raise HTTPException(status_code=404, detail="No such connection on this record")
+
+    # A record can hold one provider more than once — a connection is unique on
+    # the patient the server named as well as on the server — and the request
+    # named the provider, so all of it goes.
+    revoked = [await _revoke_at_provider(connection) for connection in connections]
+    remaining = await delete_connections(session, connections)
+
+    return DisconnectResponse(
+        provider=provider,
+        # Only true where every one of them ended at the EHR as well as here.
+        # Claiming otherwise would tell a patient their access was withdrawn
+        # somewhere it is still standing.
+        revoked_at_provider=all(revoked),
+        connections_remaining=remaining,
+    )
+
+
+async def _revoke_at_provider(connection: ProviderToken) -> bool:
+    """Ask the EHR to invalidate this connection's token, and never insist.
+
+    The refresh token where there is one, since revoking it takes the access
+    tokens issued under the same grant with it; the access token otherwise.
+
+    Every failure here is swallowed on purpose. The caller asked to disconnect,
+    not to find out whether the provider was reachable, and letting an outage
+    refuse the request would leave them connected to a server they are trying to
+    leave. What is lost is only the remote half — our copy goes either way.
+    """
+    token, hint = (
+        (connection.refresh_token, "refresh_token")
+        if connection.refresh_token is not None
+        else (connection.access_token, "access_token")
+    )
+    try:
+        adapter = registry.for_connection(connection.provider, connection.iss)
+        config = await adapter.discover(connection.iss)
+        return await adapter.revoke_token(config, token, token_type_hint=hint)
+    except (
+        registry.ProviderNotConfigured,
+        SMARTDiscoveryError,
+        SMARTProviderError,
+        httpx.HTTPError,
+    ):
+        return False
+
+
 @router.get(
     "/fhir_resources",
     deprecated=True,
@@ -344,9 +491,17 @@ async def get_all_resource(
     )
     if token_row is None:
         return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
+    await mark_record_used(session, connections)
+
+    try:
+        live = await tokens.live_token(token_row)
+    except tokens.TokenRefreshError as exc:
+        # This shape predates per-connection reporting, so it carries the wording
+        # without the flag beside it that says whether reconnecting would help.
+        return JSONResponse({"error": _refusal_for(exc).error}, status_code=502)
 
     resources = await service.fetch_fhir_resources(
-        token_row.access_token,
+        live.access_token,
         token_row.iss,
         app_session.patient_fhir_id,
         config.resources_for(include),

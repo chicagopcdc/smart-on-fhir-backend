@@ -255,10 +255,16 @@ CONNECTION_STATUS_DESCRIPTION = (
     "`ok` when every resource type read cleanly, `degraded` when some did and "
     "some did not, `error` when none did."
 )
+NEEDS_REAUTHORIZATION_DESCRIPTION = (
+    "The stored authorization has run out and cannot be renewed, so this "
+    "connection will keep answering nothing until the patient connects the "
+    "provider again. `status` says how much came back; this says whether "
+    "anything but a fresh authorization would change that."
+)
 
 
-class ConnectionResources(Connection):
-    """What one connection returned, and how completely."""
+class ConnectionHealth(Connection):
+    """How completely one connection could be read, and whether it still can be."""
 
     status: ConnectionStatus = Field(description=CONNECTION_STATUS_DESCRIPTION)
     error: str | None = Field(
@@ -266,6 +272,14 @@ class ConnectionResources(Connection):
         description="Why the connection as a whole could not be read. Per-type "
         "failures stay on their own envelope.",
     )
+    needs_reauthorization: bool = Field(
+        default=False, description=NEEDS_REAUTHORIZATION_DESCRIPTION
+    )
+
+
+class ConnectionResources(ConnectionHealth):
+    """That, plus what the connection actually returned."""
+
     resources: dict[str, ResourceEnvelope] = Field(
         description="Keyed by resource type as this API names them, which is not "
         "always the FHIR type: the Observation searches are split by category, so "
@@ -340,11 +354,22 @@ class Demographics(APIModel):
     )
 
 
-class ConnectionHealth(Connection):
-    """How completely one connection could be read for this summary."""
+class DisconnectResponse(APIModel):
+    """What became of a connection a caller asked to end."""
 
-    status: ConnectionStatus = Field(description=CONNECTION_STATUS_DESCRIPTION)
-    error: str | None = None
+    provider: str = Field(examples=["EPIC_SANDBOX"])
+    revoked_at_provider: bool = Field(
+        description="Whether the token was invalidated at the EHR as well as "
+        "dropped here. False where the server publishes no revocation endpoint, "
+        "which most do not, or where it could not be reached — the connection is "
+        "removed either way."
+    )
+    connections_remaining: int = Field(
+        description="Connections still on this patient record. Zero means the "
+        "record went with this one, and the session that held it no longer "
+        "reaches anything.",
+        examples=[1],
+    )
 
 
 class SummaryIssue(APIModel):

@@ -249,6 +249,55 @@ authorize against that exact issuer. That is never inferred from the vendor: two
 hospitals running the same EHR are separate tenants with separate logins and separate
 client registrations.
 
+### How long a connection lasts
+
+An access token from a SMART server lasts about an hour. The refresh token stored beside
+it lasts days, and a read spends it: before fetching anything the backend renews a token
+that has run out, or is close enough that the fan-out of FHIR calls after it would not
+finish in time. A server that hands back a *new* refresh token has retired the one it was
+given, so the replacement is stored — that is the difference between one working refresh
+and all of them. Concurrent reads of one connection are coalesced so they spend that
+token once between them rather than each replaying it.
+
+Concurrent reads are coalesced within one process, the same scope the rate limiter works
+at. A deployment running more than one worker should put that on a lock the workers
+share, since a server that treats a replayed refresh token as theft revokes the whole
+grant rather than just the second call.
+
+Not every failure to renew means the same thing, and the API says which:
+
+| What happened | `status` | `needsReauthorization` |
+| --- | --- | --- |
+| The provider refused the refresh (`invalid_grant`) | `error` | `true` |
+| The token endpoint was unreachable, or answered a 5xx | `error` | `false` |
+| The token ran out and there was no refresh token to spend | `error` | `true` |
+
+Only the first and third are worth asking a patient to reconnect over. A 503 or a
+rejected client secret says nothing about the patient's authorization, so the stored
+refresh token is kept rather than thrown away over a provider's bad minute.
+
+A connection is removed when nothing can reach it any more. That is not "has no live
+session" — connections are meant to outlive sessions. Two things keep a connection
+outright: a live session on its record, and its own access token for as long as that
+still works. Past those, what decides it is whether the connection could be brought back
+to life:
+
+- One holding a refresh token the provider has not refused can be renewed whenever a read
+  comes, so an expired access token means nothing on its own. It is kept until nothing has
+  read it for `CONNECTION_RETENTION_DAYS`. Reading a record resets that clock across every
+  connection on it, so the window only ever runs out on one nobody is using.
+- One that cannot be renewed was worth exactly its access token, and is now worth nothing.
+
+The sweep runs when an authorization completes, alongside the state and session sweeps, so
+it happens as often as the growth it answers. It reaches no provider: revoking belongs on
+the deliberate path.
+
+`DELETE /patients/{patientId}/connections/{provider}` is that path. It revokes the token
+at the EHR where the server publishes a `revocation_endpoint` (RFC 7009), and removes the
+connection whether or not that succeeded — a provider being down must not be able to keep
+a patient connected to it. Removing a record's last connection removes the record, and the
+session that held it stops resolving.
+
 ## Prerequisites
 
 - Python 3.10 or newer
@@ -286,6 +335,8 @@ Settings are read from the environment, and from `.env` in local development.
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated browser origins allowed to call the API. Defaults to `FRONTEND_HOSTNAME`. A wildcard is not supported. |
 | `OAUTH_STATE_TTL_SECONDS` | no | How long an OAuth state row stays valid before it is swept. Defaults to 600. |
 | `APP_SESSION_TTL_SECONDS` | no | How long a session (the bearer the frontend uses to read resources) stays valid before the caller must re-authorize. Defaults to 3600. |
+| `TOKEN_REFRESH_LEEWAY_SECONDS` | no | How close to its expiry a stored access token may be before a read renews it first. Defaults to 60. |
+| `CONNECTION_RETENTION_DAYS` | no | How long a connection that can still be refreshed is kept after the last time anything read it. Defaults to 30. |
 | `RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT` | no | Per-client throttles for the auth and resource endpoints (slowapi `<count>/<window>` syntax). Defaults `10/minute` and `30/minute`; set `RATE_LIMIT_ENABLED=false` for single-user local runs. |
 | `EPIC_SANDBOX_CLIENT_ID`, `EPIC_SANDBOX_CLIENT_SECRET` | no | Client credentials for the Epic sandbox. Register an app at https://fhir.epic.com to get them. |
 | `EPIC_CLIENT_ID`, `EPIC_CLIENT_SECRET` | no | Client credentials for the production Epic provider. |
@@ -332,6 +383,7 @@ Full request and response schemas, with examples, are at `/docs`.
 | POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns a `patientId`, a `sessionId`, and the connection just made. |
 | GET | `/patients/{patientId}/resources?type=&include=&provider=` | The patient's normalized resources, per connection. Requires `Authorization: Bearer <sessionId>`. |
 | GET | `/patients/{patientId}/summary?limit=&provider=` | A clinical summary merged across the record's connections. Requires the same bearer. |
+| DELETE | `/patients/{patientId}/connections/{provider}` | Disconnect one provider, revoking at the EHR where it offers a revocation endpoint. Removes the record with its last connection. Requires the same bearer. |
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
 

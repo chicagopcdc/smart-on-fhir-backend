@@ -216,3 +216,51 @@ async def test_exchange_raises_when_response_lacks_access_token(epic_smart_confi
 
     with pytest.raises(TokenExchangeError):
         await _provider().exchange_token(config, code="auth-code")
+
+
+# One of these failures means a grant will never work again and the rest do not.
+# Everything downstream turns on the difference — whether a stored refresh token
+# is kept or thrown away — so it is pinned here rather than left to a message.
+
+
+@pytest.mark.parametrize(
+    ("response", "gone"),
+    [
+        # What RFC 6749 §5.2 prescribes.
+        (httpx.Response(400, json={"error": "invalid_grant"}), True),
+        # And what the SMART App Launcher actually answers a dead refresh token
+        # with, verbatim. Reading the status instead of the code would tell a
+        # patient to retry something that can never work again.
+        (
+            httpx.Response(
+                401,
+                json={"error": "invalid_grant", "error_description": "Invalid refresh token"},
+            ),
+            True,
+        ),
+        # Our credentials are wrong, not the patient's authorization — the same
+        # 401 as above, and the reason the code has to be what decides. Reading
+        # this as a dead grant would cost every connection in the deployment the
+        # next time a client secret was rotated badly.
+        (httpx.Response(401, json={"error": "invalid_client"}), False),
+        # The server is unwell and has said nothing about the grant at all.
+        (httpx.Response(503, text="down for maintenance"), False),
+        # A 5xx is never a statement about a grant, whatever it carries.
+        (httpx.Response(500, json={"error": "invalid_grant"}), False),
+        # A refusal with no machine-readable reason is not one we can act on.
+        (httpx.Response(400, text="<html>Bad Request</html>"), False),
+        # A 200 carrying an error object instead of a token set.
+        (httpx.Response(200, json={"error": "invalid_grant"}), False),
+    ],
+)
+@respx.mock
+async def test_only_an_invalid_grant_means_the_authorization_is_finished(
+    epic_smart_config, response, gone
+):
+    config = _config(epic_smart_config)
+    respx.post(EPIC_TOKEN_URL).mock(return_value=response)
+
+    with pytest.raises(TokenExchangeError) as raised:
+        await _provider().refresh_token(config, refresh_token="refresh-abc")
+
+    assert raised.value.grant_is_gone is gone

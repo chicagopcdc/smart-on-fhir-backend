@@ -22,6 +22,17 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def expiry_from(expires_in: int | None) -> datetime | None:
+    """An absolute expiry from an OAuth ``expires_in``, or None where unstated.
+
+    A token response carries a lifetime in seconds; a stored token needs a point
+    in time, since it is read back long after the response arrived. RFC 6749 only
+    recommends ``expires_in``, so a server may leave it out, and None is what
+    "this server did not say" looks like on the row.
+    """
+    return utcnow() + timedelta(seconds=expires_in) if expires_in is not None else None
+
+
 def new_patient_id() -> str:
     """Mint an identifier for a patient record; see ``ProviderToken`` for why.
 
@@ -174,6 +185,11 @@ class ProviderToken(Base):
     two records, each with its own token. The duplication is the isolation:
     authenticating to a connection proves control of that connection alone, so it
     must not land the caller on a record someone else assembled around it.
+
+    That duplication is also why the row needs ``last_used_at``. A connection
+    deliberately outlives the session that made it, so nothing else on the row
+    says when it stopped being worth keeping, and every abandoned authorization
+    would otherwise stay forever.
     """
 
     __tablename__ = "provider_token"
@@ -199,6 +215,10 @@ class ProviderToken(Base):
     refresh_token: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
     scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When a read last reached the record this connection belongs to. Null means
+    # it never has, which is the state every abandoned authorization is left in
+    # and a fact worth keeping rather than flattening into created_at.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow

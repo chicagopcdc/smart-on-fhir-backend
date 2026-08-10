@@ -18,8 +18,8 @@ import respx
 
 from app.fhir import summary as summary_module
 from tests.app_harness import (
-    CERNER_SANDBOX,
-    SMART_LAUNCHER,
+    CERNER_SANDBOX as CERNER,
+    SMART_LAUNCHER as LAUNCHER,
     app_db,
     client,
     connect,
@@ -28,12 +28,6 @@ from tests.app_harness import (
     serve_record,
     token_response,
 )
-
-LAUNCHER = {**SMART_LAUNCHER, "record": "launcher_patient_record.json"}
-# The record was captured from Cerner's open endpoint, which is the
-# unauthenticated view of the same tenant as the configured issuer, so the data
-# is Oracle Health's while the URL is the one the allowlist authorizes.
-CERNER = {**CERNER_SANDBOX, "record": "cerner_patient_record.json"}
 
 
 def _serve(server: dict, responder) -> None:

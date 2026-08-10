@@ -10,6 +10,7 @@ query parameter. Real annotation objects sidestep it, and the union syntax this
 module uses needs no future import on the supported Python versions.
 """
 
+import logging
 import secrets
 
 import httpx
@@ -23,7 +24,6 @@ from app.api.deps import (
     auth_rate_limit,
     get_optional_session,
     limiter,
-    provider_for,
 )
 from app.api.schemas import (
     CallbackResponse,
@@ -35,6 +35,7 @@ from app.api.schemas import (
 from app.auth.models import AppSession, OAuthState
 from app.core.config import get_settings
 from app.core.db import (
+    delete_dead_connections,
     delete_expired_sessions,
     delete_expired_states,
     get_session,
@@ -43,6 +44,9 @@ from app.core.db import (
 from app.providers import config
 from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError, TokenExchangeError
+from app.providers.registry import provider_for
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["authorization"])
 
@@ -315,11 +319,26 @@ async def handle_callback(
         iss=iss,
         ttl_seconds=ttl,
     )
-    # Fold an expired-session sweep into the commit that persists this one, so the
-    # table stays tidy without adding a write to the resource read path.
-    await delete_expired_sessions(session)
+    # Fold the sweeps into the commit that persists this session, so the tables
+    # stay tidy without adding a write to the resource read path. Authorizing is
+    # also the event that creates the rows being swept, so the cleanup runs
+    # exactly as often as the growth does, and needs no scheduler to do it.
+    #
+    # The new session is written before the sweep rather than after, so the
+    # record this request just authorized is reachable by the time anything asks.
+    # Otherwise reconnecting a provider left alone for months — the ordinary
+    # reason to authorize one again — would meet a sweep still seeing every mark
+    # of abandonment on it, because what redeems it had not been written yet, and
+    # the request would answer with a session for a record it had just deleted.
     session.add(app_session)
+    await delete_expired_sessions(session)
+    await session.flush()
+    retired = await delete_dead_connections(session)
     await session.commit()
+    if retired:
+        # Counts only. How fast the table turns over is worth seeing; whose
+        # connections they were is not, and this is a log.
+        logger.info("Retired %d connection(s) nothing could reach", retired)
 
     return CallbackResponse(
         patient_id=token_row.patient_id,

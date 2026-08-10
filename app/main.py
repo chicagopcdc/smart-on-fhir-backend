@@ -1,5 +1,6 @@
 """The application: middleware, lifespan, and the routers that make up the API."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -42,8 +43,35 @@ TAGS = [
 ]
 
 
+def configure_logging() -> None:
+    """Give this application's own log records somewhere to go, and only ours.
+
+    uvicorn configures three loggers of its own and leaves the root logger
+    alone, so anything logged under ``app.*`` falls back to the WARNING default
+    and every INFO record the application writes is dropped — including the one
+    reporting how many connections a sweep retired, which exists precisely so
+    that number is visible rather than inferred.
+
+    Lowering the level on ``app`` rather than on the root is the difference
+    between hearing this application and hearing every library it uses. httpx in
+    particular logs a line per request at INFO, and a single read fans out over
+    a dozen FHIR calls whose URLs carry the provider's own patient id — so a
+    root-level floor would write exactly the identifier the rest of this code
+    goes out of its way to keep out of logs. Records still reach the root
+    handler once made; it is the level on the originating logger that decides
+    whether they are made at all.
+
+    ``basicConfig`` is a no-op once the root logger has handlers, so a
+    deployment that configures its own logging keeps it, and this only supplies
+    a destination for one that does not.
+    """
+    logging.basicConfig(format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logging.getLogger("app").setLevel(logging.INFO)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     # Build the FHIR model classes now so the first read is not the one that pays
     # for it on the event loop.
     normalize.warm_model_cache()
@@ -69,7 +97,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().resolved_cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
