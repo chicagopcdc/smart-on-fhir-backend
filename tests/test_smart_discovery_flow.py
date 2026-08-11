@@ -1,9 +1,10 @@
 """Discovery flow: from an issuer URL to a usable SMART configuration.
 
-Drives the path a real request takes — fetch the server's
-``.well-known/smart-configuration`` through ``FHIRProvider.discover()``, parse
-it, and read the endpoints and PKCE signal an authorization request needs —
-against the real Epic and public discovery documents, with HTTP mocked by respx.
+Drives the path a real request takes — decide whether the issuer is one we are
+willing to fetch at all, fetch the server's ``.well-known/smart-configuration``
+through ``FHIRProvider.discover()``, parse it, and read the endpoints and PKCE
+signal an authorization request needs — against the real Epic and public discovery
+documents, with HTTP mocked by respx.
 """
 
 from __future__ import annotations
@@ -12,20 +13,100 @@ import httpx
 import pytest
 import respx
 
+from app.providers import targets
 from app.providers.discovery import (
     DiscoveryNotFoundError,
     DiscoveryParseError,
     DiscoveryUnreachableError,
     SMARTDiscovery,
 )
+from app.providers.targets import UnresolvedTarget, UnsafeTarget, ensure_fetchable
 
 WELL_KNOWN = "/.well-known/smart-configuration"
+
+# A public literal, so the refusal table needs no name resolution to run.
+PUBLIC_IP_ISS = "https://8.8.8.8/fhir"
 
 EPIC_ISS = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 PUBLIC_ISS = "https://launch.smarthealthit.org/v/r4/fhir"
 CERNER_ISS = (
     "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
 )
+
+
+# Which issuers we are willing to fetch at all.
+#
+# Table-driven rather than flow-driven on purpose: this is one pure decision with
+# many ways to get it wrong, and the cases below are the ones that would hurt. The
+# journey it guards — a refused issuer answering without a request leaving the
+# process — is driven end to end in tests/test_endpoint_check_flow.py.
+
+
+@pytest.mark.parametrize(
+    "iss",
+    [
+        pytest.param("file:///etc/passwd", id="not-http"),
+        pytest.param("ftp://8.8.8.8/fhir", id="not-http-either"),
+        pytest.param("8.8.8.8/fhir", id="no-scheme"),
+        pytest.param("https:///fhir", id="no-host"),
+        pytest.param("https://[::1/fhir", id="malformed-ipv6-literal"),
+        pytest.param("https://8.8.8.8:99999/fhir", id="port-out-of-range"),
+        pytest.param("https://user:pw@8.8.8.8/fhir", id="carries-credentials"),
+        pytest.param("http://127.0.0.1:5432/fhir", id="loopback"),
+        pytest.param("https://[::1]/fhir", id="loopback-v6"),
+        pytest.param("http://10.1.2.3/fhir", id="rfc1918"),
+        pytest.param("http://169.254.169.254/latest/meta-data", id="instance-metadata"),
+        pytest.param("http://100.64.0.1/fhir", id="carrier-grade-nat"),
+        pytest.param("https://[::ffff:10.0.0.1]/fhir", id="rfc1918-written-as-v6"),
+    ],
+)
+async def test_an_issuer_we_should_not_fetch_is_refused(iss):
+    with pytest.raises(UnsafeTarget):
+        await ensure_fetchable(iss)
+
+
+async def test_a_public_issuer_is_accepted_and_normalized():
+    assert await ensure_fetchable(f"  {PUBLIC_IP_ISS}/  ") == PUBLIC_IP_ISS
+
+
+async def test_a_hostname_pointing_into_private_space_is_refused(monkeypatch):
+    """The case a scheme-only check misses: the URL looks ordinary, the name does not.
+
+    Nothing about `https://fhir.internal.example/r4` reads as dangerous until it is
+    resolved, which is why the guard resolves before deciding.
+    """
+    monkeypatch.setattr(targets, "_resolve", _resolving_to("10.0.0.7"))
+
+    with pytest.raises(UnsafeTarget):
+        await ensure_fetchable("https://fhir.internal.example/r4")
+
+
+async def test_one_private_answer_among_public_ones_is_enough_to_refuse(monkeypatch):
+    monkeypatch.setattr(targets, "_resolve", _resolving_to("93.184.216.34", "127.0.0.1"))
+
+    with pytest.raises(UnsafeTarget):
+        await ensure_fetchable("https://split-horizon.example/r4")
+
+
+async def test_a_host_that_does_not_resolve_is_told_apart_from_one_we_refuse(monkeypatch):
+    """Distinct exceptions because callers owe their users distinct answers.
+
+    A name that no longer resolves is an honest "gone", not a bad request.
+    """
+    async def _nxdomain(host):
+        raise UnresolvedTarget(f"{host} does not resolve")
+
+    monkeypatch.setattr(targets, "_resolve", _nxdomain)
+
+    with pytest.raises(UnresolvedTarget):
+        await ensure_fetchable("https://never-existed.example/r4")
+
+
+def _resolving_to(*addresses: str):
+    async def _resolve(host: str) -> list[str]:
+        return list(addresses)
+
+    return _resolve
 
 
 # Happy path: discover a real server, then use what came back.
@@ -110,6 +191,51 @@ async def test_discovery_refetches_when_cache_disabled(make_provider, epic_smart
     await provider.discover(EPIC_ISS)
 
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_cached_answer_reports_when_it_was_actually_fetched(epic_smart_config):
+    """The timestamp has to survive the cache, or anything reporting it starts lying.
+
+    A caller telling a user "checked just now" off a fifteen-minute-old cache entry
+    reintroduces exactly the staleness such a check exists to replace.
+    """
+    route = respx.get(EPIC_ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
+    discovery = SMARTDiscovery()
+
+    first = await discovery.fetch_result(EPIC_ISS)
+    second = await discovery.fetch_result(EPIC_ISS)
+
+    assert route.call_count == 1, "the second call should have been served from cache"
+    assert second.fetched_at == first.fetched_at
+
+
+@respx.mock
+async def test_the_cache_does_not_grow_without_bound(epic_smart_config):
+    """An unbounded cache is a way to spend this process's memory, once the issuer
+    reaching it is a caller's to choose rather than a provider allowlist's.
+
+    Asserted through the network instead of the cache dict: what matters is that
+    something was dropped and re-fetched, not how it was stored.
+    """
+    route = respx.get(url__regex=r"https://\w\.example/fhir/\.well-known/.*").mock(
+        return_value=httpx.Response(200, json=epic_smart_config)
+    )
+    discovery = SMARTDiscovery(max_entries=3)
+
+    for host in "abcde":
+        await discovery.fetch_result(f"https://{host}.example/fhir")
+    filled = route.call_count
+
+    await discovery.fetch_result("https://e.example/fhir")
+    await discovery.fetch_result("https://a.example/fhir")
+
+    assert filled == 5
+    assert route.call_count == 6, (
+        "the newest issuer should still be cached and the oldest re-fetched"
+    )
 
 
 # Failure paths: the flow raises a typed error, not a raw HTTP/JSON exception.
