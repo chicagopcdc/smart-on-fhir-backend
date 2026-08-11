@@ -1,18 +1,36 @@
-"""Finding a server to connect to: what this backend is configured for, and the
-national endpoint list it can be pointed at."""
+"""Finding a server to connect to: what this backend is configured for, the
+national endpoint list it can be pointed at, and whether a given endpoint is
+usable right now.
 
-from __future__ import annotations
+Deliberately no ``from __future__ import annotations`` here, for the reason
+``app/api/auth.py`` sets out at length: the rate limiter wraps an endpoint with
+``functools.wraps``, which cannot carry a function's ``__globals__`` across, so
+FastAPI would resolve a stringified annotation in slowapi's namespace instead of
+this one and quietly misread the parameter. Real annotation objects sidestep it.
+"""
 
-from fastapi import APIRouter, HTTPException, Query
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from app.api.deps import RATE_LIMITED, endpoint_check_rate_limit, limiter
 from app.api.schemas import (
     ConfiguredProvider,
+    EndpointCheckResponse,
+    EndpointCheckStatus,
     ProviderSearchResponse,
     ProviderSearchRow,
     refusal,
 )
-from app.providers import config, lantern
+from app.providers import config, lantern, registry
+from app.providers.discovery import (
+    DiscoveryNotFoundError,
+    DiscoveryParseError,
+    DiscoveryResult,
+    DiscoveryUnreachableError,
+)
+from app.providers.targets import UnresolvedTarget, UnsafeTarget, ensure_fetchable
 
 router = APIRouter(tags=["providers"])
 
@@ -20,6 +38,21 @@ router = APIRouter(tags=["providers"])
 PAGE_SIZE_MAX = 1000
 
 UNAVAILABLE = "Provider list is temporarily unavailable"
+
+# What each outcome means, in words a caller can put in front of a user. Fixed
+# here rather than taken from the exception, whose message carries the URL that
+# was fetched and the parser's complaint about the document — neither of which is
+# something this API repeats back on an endpoint's behalf.
+_CHECK_DETAIL: dict[str, str] = {
+    "ok": "The endpoint published a SMART configuration.",
+    "unreachable": "The endpoint could not be reached just now. Some servers refuse "
+    "an unauthenticated request for their configuration, so this is worth a warning "
+    "rather than treating the endpoint as unusable.",
+    "no_smart_configuration": "The endpoint is reachable but publishes no SMART "
+    "configuration, so it cannot be used to sign in.",
+    "invalid_smart_configuration": "The endpoint publishes a SMART configuration "
+    "that cannot be used to sign in.",
+}
 
 
 def _configured_by_issuer() -> dict[str, str]:
@@ -95,6 +128,7 @@ async def search_providers(
             vendor=row.get("vendor"),
             fhir_version=row.get("fhirVersion"),
             smart_capable=row.get("smartCapable"),
+            smart_capable_as_of=data_date,
             configured=row["url"].rstrip("/") in configured,
             provider=configured.get(row["url"].rstrip("/")),
         )
@@ -109,6 +143,92 @@ async def search_providers(
         source=source,
         data_date=data_date,
         rows=rows,
+    )
+
+
+@router.get(
+    "/providers/endpoint-check",
+    response_model=EndpointCheckResponse,
+    summary="Check whether an endpoint can be used, now",
+    responses={
+        400: refusal("The issuer is not one this backend will fetch"),
+        429: RATE_LIMITED,
+    },
+)
+@limiter.limit(endpoint_check_rate_limit)
+async def check_endpoint(
+    request: Request,
+    iss: str = Query(
+        description="The FHIR base URL to check, as it would be passed to "
+        "`POST /auth/connect`.",
+        examples=["https://launch.smarthealthit.org/v/r4/fhir"],
+    ),
+):
+    """Ask an endpoint, now, whether it can be used to sign a patient in.
+
+    The `smartCapable` flag on a search row is ONC's, recorded whenever it last
+    probed, and the published file can be months old. This reads the endpoint's
+    own `.well-known/smart-configuration` and answers for the present, so a dead
+    or non-SMART endpoint is ruled out before a user is sent to a login screen
+    that will never appear.
+
+    A negative is an answer, not an error: only an issuer this backend refuses to
+    fetch is a `400`.
+
+    What this does not say is whether we could *authorize* against the endpoint,
+    which is a separate fact and a stricter one. Knowing the vendor does not
+    settle it either: the vendor is which software serves an endpoint, while
+    authorizing needs a client registration held with that specific tenant. Two
+    hospitals running the same EHR are separate tenants with separate logins. The
+    `configured` flag on a search row is what answers that half.
+    """
+    try:
+        checked = await ensure_fetchable(iss)
+    except UnsafeTarget as exc:
+        # Raised rather than returned: what costs a response its CORS headers is
+        # going unhandled, and an HTTPException is handled inside the middleware
+        # stack. See the 503 in search_providers above.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UnresolvedTarget:
+        # A name that no longer resolves is a fact about the endpoint, not a bad
+        # request, so it answers like any other endpoint that cannot be reached.
+        return _checked(iss.strip().rstrip("/"), "unreachable")
+
+    try:
+        result = await registry.discovery.fetch_result(checked)
+    except DiscoveryNotFoundError:
+        return _checked(checked, "no_smart_configuration")
+    except DiscoveryParseError:
+        return _checked(checked, "invalid_smart_configuration")
+    except DiscoveryUnreachableError:
+        return _checked(checked, "unreachable")
+
+    return _checked(checked, "ok", result)
+
+
+def _checked(
+    iss: str, status: EndpointCheckStatus, result: DiscoveryResult | None = None
+) -> EndpointCheckResponse:
+    """One check's answer, with the fields that depend on each other kept in step.
+
+    ``checkedAt`` is the fetch's own timestamp when there is one, so a cached
+    configuration reports its real age rather than claiming to be current. A
+    failure was never cached, so for those the check is happening now.
+    """
+    discovered = result.configuration if result else None
+    return EndpointCheckResponse(
+        iss=iss,
+        status=status,
+        reachable=status != "unreachable",
+        smart_capable=status == "ok",
+        authorization_endpoint=(
+            str(discovered.authorization_endpoint) if discovered else None
+        ),
+        token_endpoint=str(discovered.token_endpoint) if discovered else None,
+        detail=_CHECK_DETAIL[status],
+        checked_at=(
+            result.fetched_at if result else datetime.now(timezone.utc)
+        ).isoformat(timespec="seconds"),
     )
 
 

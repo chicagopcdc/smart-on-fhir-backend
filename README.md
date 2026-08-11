@@ -249,6 +249,47 @@ authorize against that exact issuer. That is never inferred from the vendor: two
 hospitals running the same EHR are separate tenants with separate logins and separate
 client registrations.
 
+### Checking an endpoint before starting a login
+
+`smartCapable` on a search row is ONC's answer, not ours, recorded whenever it last
+probed the endpoint. Each row carries `smartCapableAsOf` for the date of the file it came
+from, and that date can be months in the past — long enough for an endpoint to have
+moved, let its certificate lapse, or stopped publishing a SMART configuration while still
+reading as connectable.
+
+`GET /providers/endpoint-check?iss=…` asks the endpoint itself, now. It reads the same
+`.well-known/smart-configuration` the authorization flow would, and answers with the
+authorize and token endpoints the server advertises:
+
+| `status` | `reachable` | Means |
+| --- | --- | --- |
+| `ok` | true | Publishes a configuration this backend can use |
+| `no_smart_configuration` | true | Answers, but does not do SMART — a settled no |
+| `invalid_smart_configuration` | true | Publishes something that cannot be used to authorize |
+| `unreachable` | false | Could not be reached, or answered an error |
+
+All four are a `200`: an unusable endpoint is the answer, not a failure to produce one.
+Only an issuer this backend will not fetch is a `400`, and `checkedAt` says when the
+configuration was actually read rather than when the response was built, so a reused
+answer reports its real age.
+
+Three things it does not tell you. It does not say this backend could *authorize* against
+the endpoint — that needs a client registration held with that specific tenant, which is
+what `configured` on a search row answers. A passing check is a fact about a moment; a
+server can still be down by the time the user clicks through.
+
+And `unreachable` means "could not be confirmed from here", not "broken". Several large
+vendors answer `403` to an unauthenticated request for a SMART configuration, including
+some serving thousands of the endpoints in the national list, so their endpoints read as
+unreachable here while working normally for a registered client. Worth surfacing to a user
+as a warning rather than a closed door.
+
+Because the endpoint fetches a URL the caller chooses, it accepts `http` and `https`
+only, refuses issuers carrying credentials or resolving to an address reachable only from
+inside the network the backend runs in, and never repeats anything the endpoint said back
+to the caller. It is throttled separately from the auth routes
+(`ENDPOINT_CHECK_RATE_LIMIT`).
+
 ### How long a connection lasts
 
 An access token from a SMART server lasts about an hour. The refresh token stored beside
@@ -337,7 +378,7 @@ Settings are read from the environment, and from `.env` in local development.
 | `APP_SESSION_TTL_SECONDS` | no | How long a session (the bearer the frontend uses to read resources) stays valid before the caller must re-authorize. Defaults to 3600. |
 | `TOKEN_REFRESH_LEEWAY_SECONDS` | no | How close to its expiry a stored access token may be before a read renews it first. Defaults to 60. |
 | `CONNECTION_RETENTION_DAYS` | no | How long a connection that can still be refreshed is kept after the last time anything read it. Defaults to 30. |
-| `RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT` | no | Per-client throttles for the auth and resource endpoints (slowapi `<count>/<window>` syntax). Defaults `10/minute` and `30/minute`; set `RATE_LIMIT_ENABLED=false` for single-user local runs. |
+| `RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT`, `ENDPOINT_CHECK_RATE_LIMIT` | no | Per-client throttles (slowapi `<count>/<window>` syntax) for the auth routes, the resource reads, and the endpoint check. Defaults `10/minute`, `30/minute` and `20/minute`; set `RATE_LIMIT_ENABLED=false` for single-user local runs. |
 | `EPIC_SANDBOX_CLIENT_ID`, `EPIC_SANDBOX_CLIENT_SECRET` | no | Client credentials for the Epic sandbox. Register an app at https://fhir.epic.com to get them. |
 | `EPIC_CLIENT_ID`, `EPIC_CLIENT_SECRET` | no | Client credentials for the production Epic provider. |
 | `EPIC_ISSUER` | no | FHIR base URL of the production Epic deployment. Authorization for the `EPIC` provider is only allowed against this issuer. |
@@ -385,11 +426,13 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/patients/{patientId}/summary?limit=&provider=` | A clinical summary merged across the record's connections. Requires the same bearer. |
 | DELETE | `/patients/{patientId}/connections/{provider}` | Disconnect one provider, revoking at the EHR where it offers a revocation endpoint. Removes the record with its last connection. Requires the same bearer. |
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
+| GET | `/providers/endpoint-check?iss=` | Whether one endpoint is reachable and SMART-capable right now, with the authorize and token endpoints it advertises. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
 
 Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
 `Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
-`FHIR_RATE_LIMIT`) and can be turned off for local single-user runs.
+`FHIR_RATE_LIMIT`, `ENDPOINT_CHECK_RATE_LIMIT`) and can be turned off for local
+single-user runs.
 
 ### Deprecated
 

@@ -138,6 +138,9 @@ async def test_a_row_carries_what_a_caller_needs_to_decide():
             "vendor": "Epic Systems Corporation",
             "fhirVersion": "4.0.1",
             "smartCapable": True,
+            # Dated per row, so a row rendered on its own still says how old its
+            # certification flag is. `GET /providers/endpoint-check` is the live one.
+            "smartCapableAsOf": "2025-11-14",
             "configured": False,
             "provider": None,
         }
@@ -201,6 +204,9 @@ async def test_an_unavailable_source_still_offers_what_we_can_connect_to():
     # known SMART-capable; their vendor is not in ONC's data and is not guessed.
     assert all(row["configured"] and row["smartCapable"] for row in body["rows"])
     assert all(row["vendor"] is None for row in body["rows"])
+    # Undated, because that flag is this backend's own claim rather than a reading
+    # from a published file, and dating it would pass one off as the other.
+    assert all(row["smartCapableAsOf"] is None for row in body["rows"])
 
 
 @respx.mock

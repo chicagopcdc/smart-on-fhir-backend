@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     auth_rate_limit: str = "10/minute"
     fhir_rate_limit: str = "30/minute"
 
+    # Checking an endpoint spends an outbound request on a host the caller names,
+    # so this throttle is what bounds how fast this backend can be aimed at
+    # something. Separate from auth_rate_limit because the two protect different
+    # things: raising it so a user can try a few endpoints in a row must not also
+    # raise the throttle standing in front of the token endpoints.
+    endpoint_check_rate_limit: str = "20/minute"
+
     # OAuth client credentials, registered per environment with the EHR. These
     # are secrets and so live in the environment, never in source. Optional
     # because a deployment only configures the providers it actually uses.

@@ -458,7 +458,17 @@ class ProviderSearchRow(APIModel):
     smart_capable: bool | None = Field(
         default=None,
         description="Whether the endpoint served a SMART configuration when ONC "
-        "last probed it. Null when the source could not say.",
+        "last probed it, which is not the same as whether it would now — see "
+        "`smartCapableAsOf` for how old the answer is, and "
+        "`GET /providers/endpoint-check` for a live one. Null when the source "
+        "could not say.",
+    )
+    smart_capable_as_of: str | None = Field(
+        default=None,
+        description="The date of the published file `smartCapable` was read from. "
+        "Carried per row so a row shown on its own still says how old its flag is. "
+        "Null when the row is not from the published file.",
+        examples=["2025-11-14"],
     )
     configured: bool = Field(
         description="Whether this backend holds a registration that can "
@@ -493,3 +503,66 @@ class ProviderSearchResponse(APIModel):
         examples=["2025-11-14"],
     )
     rows: list[ProviderSearchRow]
+
+
+EndpointCheckStatus = Literal[
+    "ok",
+    "unreachable",
+    "no_smart_configuration",
+    "invalid_smart_configuration",
+]
+
+
+class EndpointCheckResponse(APIModel):
+    """What one endpoint answered when asked, just now, whether it can be used.
+
+    Every one of these outcomes is a successful check, including the negative
+    ones — the endpoint being unusable is the answer, not a failure to produce
+    one. `POST /auth/connect` cannot make that distinction: by the time it fails,
+    the user has already chosen a provider and is waiting for a login screen.
+    """
+
+    iss: str = Field(
+        description="The issuer that was checked, as it was resolved against.",
+        examples=["https://launch.smarthealthit.org/v/r4/fhir"],
+    )
+    status: EndpointCheckStatus = Field(
+        description="`ok` when the endpoint published a configuration this backend "
+        "can use. `unreachable` when it could not be reached or answered an error. "
+        "`no_smart_configuration` when it answered but publishes none, which is a "
+        "settled no rather than a bad moment. `invalid_smart_configuration` when it "
+        "publishes something that cannot be used to authorize."
+    )
+    reachable: bool = Field(
+        description="Whether the endpoint answered at all. True alongside "
+        "`no_smart_configuration`: a server can be perfectly healthy and still not "
+        "do SMART, and a caller retries one of those and not the other. False means "
+        "unconfirmed rather than broken — some vendors refuse an unauthenticated "
+        "request for their configuration."
+    )
+    smart_capable: bool = Field(
+        description="Whether the endpoint can be used to authorize right now. True "
+        "only when `status` is `ok`."
+    )
+    authorization_endpoint: str | None = Field(
+        default=None,
+        description="Where the endpoint says to send the user, when it says.",
+        examples=["https://launch.smarthealthit.org/v/r4/auth/authorize"],
+    )
+    token_endpoint: str | None = Field(
+        default=None,
+        description="Where the endpoint says to exchange the code, when it says.",
+        examples=["https://launch.smarthealthit.org/v/r4/auth/token"],
+    )
+    detail: str = Field(
+        description="A fixed explanation of the status, safe to show a user. Chosen "
+        "from a set this backend defines rather than passed through from the "
+        "endpoint, which is not a source this API repeats to its callers.",
+        examples=["The endpoint published a SMART configuration."],
+    )
+    checked_at: str = Field(
+        description="When the configuration was read off the network, in UTC. Not "
+        "necessarily now: a recent answer may be reused, and this says how recent. "
+        "Contrast `smartCapableAsOf` on a search row, which can be months old.",
+        examples=["2026-08-11T19:52:04+00:00"],
+    )
