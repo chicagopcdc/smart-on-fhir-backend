@@ -12,17 +12,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+
+_URL = TypeAdapter(HttpUrl)
 
 
 def _is_unusable(value: Any, *, wants_list: bool) -> bool:
     """Whether a published value is junk rather than something to read.
 
-    Deliberately narrow: it names the shapes real servers have been seen to send —
-    a null, a list holding something other than strings, a bare string where a list
-    belongs, an empty string standing in for absent — and leaves anything else to
-    pydantic. Erring the other way, keeping only values of a recognized shape,
-    would silently discard a value handed in as an already-parsed object.
+    A list has to be a list of strings. Anything else is a URL, and the test for
+    one is whether it parses as an absolute http(s) URL — asked of pydantic rather
+    than reimplemented, so the answer here cannot drift from the answer the field
+    itself would give, and so a value handed in already parsed still passes.
+
+    Every published shape that has turned up in the wild lands on the same side of
+    this: a null, an empty string, a relative path like ``/manage``, a ``urn:``, a
+    list holding a list, a number. All of them mean the same thing — the server
+    said something about an optional field and none of it can be read.
     """
     if value is None:
         return True
@@ -30,7 +44,11 @@ def _is_unusable(value: Any, *, wants_list: bool) -> bool:
         return not isinstance(value, list) or not all(
             isinstance(item, str) for item in value
         )
-    return isinstance(value, str) and not value.strip()
+    try:
+        _URL.validate_python(value)
+    except ValidationError:
+        return True
+    return False
 
 
 class SMARTConfiguration(BaseModel):
@@ -79,9 +97,10 @@ class SMARTConfiguration(BaseModel):
 
         Observed in the wild, on servers whose authorize and token endpoints are
         perfectly good: ``response_types_supported`` sent as ``null``,
-        ``scopes_supported`` sent as a list containing a list, and ``issuer`` sent
-        as an empty string. Each would otherwise fail validation and take the whole
-        document down with it, and none of them is read anywhere.
+        ``scopes_supported`` sent as a list containing a list, ``issuer`` sent as an
+        empty string, and ``jwks_uri`` sent as a path relative to the base. Each
+        would otherwise fail validation and take the whole document down with it,
+        and none of them is read anywhere.
 
         Dropping a value falls back to the field's default, which is the same state
         as a server that never sent it — a path this backend already handles, since

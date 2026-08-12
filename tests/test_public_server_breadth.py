@@ -15,13 +15,20 @@ fails if the shapes that matter stop being represented.
 
 from __future__ import annotations
 
+from typing import get_origin
+
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from app.providers.discovery import DiscoveryParseError, SMARTDiscovery
 from app.providers.generic import GenericSMARTProvider, SMARTProviderError
-from app.providers.models import SMARTConfiguration
+
+# _is_unusable is reached into deliberately: the question "does this capture still
+# contain something the model would discard" is exactly the one it answers, and
+# restating it here would let the two drift apart silently.
+from app.providers.models import SMARTConfiguration, _is_unusable
 from tests.app_harness import load_fixture
 
 WELL_KNOWN = "/.well-known/smart-configuration"
@@ -212,6 +219,88 @@ def test_the_corpus_still_covers_the_shapes_that_matter():
     # And the two that are refused for different reasons are both still there.
     refused = {s["id"] for s in CORPUS["servers"] if not s["usable"]}
     assert len(refused) >= 3, "the corpus should keep some documents we refuse"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        pytest.param("jwks_uri", "/well-known/jwks.json", id="relative-path"),
+        pytest.param("management_endpoint", "", id="empty-string"),
+        pytest.param("response_types_supported", None, id="null-list"),
+        pytest.param("scopes_supported", [["openid"]], id="list-in-a-list"),
+        pytest.param("issuer", "urn:oid:1.2.3", id="not-a-url"),
+    ],
+)
+def test_one_unreadable_optional_field_does_not_cost_the_whole_document(field, value):
+    """Every way an optional field has been seen published wrong, in one table.
+
+    Written against a synthetic document rather than a captured one on purpose: no
+    server in the corpus pairs *good* authorize and token endpoints with a relative
+    optional URL, so the corpus alone cannot hold that case down. Carepaths comes
+    closest and is refused anyway, for endpoints that are relative too.
+
+    All five of these mean one thing — the server described itself badly in a field
+    nothing reads — so all five have to land on the same side of the line.
+    """
+    document = {
+        "authorization_endpoint": "https://ok.example/authorize",
+        "token_endpoint": "https://ok.example/token",
+        field: value,
+    }
+
+    config = SMARTConfiguration.model_validate(document)
+
+    assert str(config.authorization_endpoint) == "https://ok.example/authorize"
+    # Dropped to the field's default, which is the state a server that never
+    # mentioned it would leave us in.
+    assert getattr(config, field) == SMARTConfiguration.model_fields[field].get_default(
+        call_default_factory=True
+    )
+
+
+def test_a_required_endpoint_is_never_treated_that_way():
+    """The other half of the rule. These two are acted on, so a value that cannot
+    be read is a refusal rather than something to drop and carry on without."""
+    for bad in ("/login", "", None, "urn:oid:1.2.3", "javascript:alert(1)"):
+        with pytest.raises(ValidationError):
+            SMARTConfiguration.model_validate(
+                {
+                    "authorization_endpoint": bad,
+                    "token_endpoint": "https://ok.example/token",
+                }
+            )
+
+
+def test_the_entries_kept_for_malformed_metadata_still_carry_some():
+    """The regression entries have to keep the junk they were captured for.
+
+    Their whole job is to fail if the tolerance in `SMARTConfiguration` is removed,
+    and they can only do that while they still publish something malformed. A
+    routine re-capture from a server that has since fixed its document would leave
+    the validator uncovered with the suite fully green, so this asserts the raw
+    entry rather than the parsed one — the parsed one has already been cleaned up.
+    """
+    for server in CORPUS["servers"]:
+        if server["kind"] != "regression":
+            continue
+        raw = server["configuration"]
+        junk = {
+            name: value
+            for name, value in raw.items()
+            if name in SMARTConfiguration.model_fields
+            and name not in ("authorization_endpoint", "token_endpoint")
+            and _is_unusable(
+                value,
+                wants_list=get_origin(
+                    SMARTConfiguration.model_fields[name].annotation
+                )
+                is list,
+            )
+        }
+        assert junk, (
+            f"{server['id']} no longer publishes anything malformed, so it no "
+            "longer covers the tolerance it was captured for"
+        )
 
 
 def test_every_entry_says_where_it_came_from_and_why_it_is_here():

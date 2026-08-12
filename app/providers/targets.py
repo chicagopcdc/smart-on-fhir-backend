@@ -13,6 +13,14 @@ from the allowlist and legitimately include a FHIR server on localhost during
 development. Refusing private addresses there would break running the stack
 locally while adding nothing, because the allowlist already answers the question.
 
+The port is deliberately not restricted. Since the answer distinguishes a server
+that replied from one that refused, allowing any port does leave a slow oracle for
+whether something speaks HTTP on a public host — but that is something anyone can
+ask directly and faster, and the endpoints being checked are public by design. The
+counterweight is concrete: ONC's own list carries 31 endpoints on non-default
+ports, most of them on 9443, so restricting to 80 and 443 would refuse real
+certified servers to close a gap that buys an attacker little.
+
 What this does not close: the address checked here and the address httpx
 eventually connects to come from two separate resolutions, so a name that answers
 differently between them is not caught. Closing that needs a transport that
@@ -76,6 +84,14 @@ async def ensure_fetchable(raw: str) -> str:
 
     if not host:
         raise UnsafeTarget("An issuer must name a host")
+
+    # A FHIR base URL ends before any query or fragment, and one that carries
+    # either cannot be used by the caller that follows: the well-known path is
+    # appended to this string, so a query would swallow it (the request goes to the
+    # base itself with the path buried in the query) and a fragment would discard
+    # it outright. Both would answer about a document that was never fetched.
+    if parts.query or parts.fragment or candidate.endswith(("?", "#")):
+        raise UnsafeTarget("An issuer must not carry a query or fragment")
 
     for address in await _addresses(host):
         if not _is_public(address):
@@ -141,5 +157,12 @@ async def _resolve(host: str) -> list[str]:
         infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise UnresolvedTarget(f"{host} does not resolve") from exc
+    except UnicodeError as exc:
+        # A name the resolver will not even encode: the IDNA codec rejects a label
+        # over 63 characters before any lookup happens. Caught here because it is
+        # neither a lookup failure nor a subclass of one, and letting it out means
+        # an unhandled error — which is the one way a response loses its CORS
+        # headers, since nothing above this is in the middleware stack.
+        raise UnsafeTarget("An issuer must name a host") from exc
 
     return [info[4][0] for info in infos]

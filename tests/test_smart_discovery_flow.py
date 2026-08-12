@@ -58,6 +58,15 @@ CERNER_ISS = (
         pytest.param("http://169.254.169.254/latest/meta-data", id="instance-metadata"),
         pytest.param("http://100.64.0.1/fhir", id="carrier-grade-nat"),
         pytest.param("https://[::ffff:10.0.0.1]/fhir", id="rfc1918-written-as-v6"),
+        # A FHIR base ends before either of these, and the well-known path is
+        # appended to whatever comes back: a query swallows it and a fragment
+        # discards it, so both would answer about a document never fetched.
+        pytest.param("https://8.8.8.8/r4?_format=json", id="carries-a-query"),
+        pytest.param("https://8.8.8.8/r4#frag", id="carries-a-fragment"),
+        pytest.param("https://8.8.8.8/r4?", id="empty-query"),
+        # The IDNA codec refuses a label over 63 characters before any lookup, and
+        # that is not a resolution failure. Uncaught it would be a 500.
+        pytest.param("https://" + "a" * 64 + ".com/fhir", id="unencodable-hostname"),
     ],
 )
 async def test_an_issuer_we_should_not_fetch_is_refused(iss):
@@ -67,6 +76,15 @@ async def test_an_issuer_we_should_not_fetch_is_refused(iss):
 
 async def test_a_public_issuer_is_accepted_and_normalized():
     assert await ensure_fetchable(f"  {PUBLIC_IP_ISS}/  ") == PUBLIC_IP_ISS
+
+
+async def test_a_non_default_port_is_allowed():
+    """Not an oversight. ONC's list carries endpoints on ports like 9443, and
+    refusing them to narrow a slow oracle anyone can run directly would cost real
+    servers for very little."""
+    iss = "https://8.8.8.8:9443/fhir-server/api/v4"
+
+    assert await ensure_fetchable(iss + "/") == iss
 
 
 async def test_a_hostname_pointing_into_private_space_is_refused(monkeypatch):

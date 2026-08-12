@@ -32,6 +32,10 @@ ISS = "https://fhir.example-hospital.org/R4"
 # than the resolver, so the fixture hostnames need an answer from somewhere.
 PUBLIC_ADDRESS = "93.184.216.34"
 
+# Captured before any fixture replaces it, for the one test that needs the real
+# resolver to reject a name it cannot encode.
+_REAL_RESOLVE = targets._resolve
+
 
 @pytest.fixture(autouse=True)
 def _resolve_to_a_public_address(request, monkeypatch):
@@ -229,6 +233,47 @@ async def test_an_issuer_we_refuse_costs_no_outbound_request(iss):
     # message built from the input would make this a way to place text of one's
     # choosing in a response.
     assert iss not in response.json()["detail"]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "iss",
+    [
+        pytest.param("https://" + "b" * 64 + ".example/fhir", id="unencodable-hostname"),
+        pytest.param("https://fhir.example-hospital.org/R4?_format=json", id="a-query"),
+        pytest.param("https://fhir.example-hospital.org/R4#x", id="a-fragment"),
+    ],
+)
+async def test_a_refusal_stays_a_refusal_and_keeps_its_cors_headers(iss, monkeypatch):
+    """Every refusal has to arrive as a 400 the browser is allowed to read.
+
+    An unhandled exception is answered outside the middleware stack, so it comes
+    back as a 500 with no CORS headers at all — which a frontend cannot even read
+    the reason from. These three inputs each reach the guard by a different route
+    (the resolver refusing to encode the name, and two URLs whose shape would send
+    the request somewhere other than the well-known path), so they are worth
+    driving through the real app rather than asserting on the guard alone.
+
+    The real resolver is restored here: the name-encoding refusal comes from the
+    resolver itself, so the stub the rest of this module uses would step over the
+    very thing being checked. It stays offline — a label that long is rejected
+    while being encoded, before any lookup is attempted.
+    """
+    monkeypatch.setattr(targets, "_resolve", _REAL_RESOLVE)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/providers/endpoint-check",
+            params={"iss": iss},
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+    assert response.status_code == 400, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["detail"]
+    assert not respx.calls
 
 
 @respx.mock
