@@ -39,11 +39,9 @@ PAGE_SIZE_MAX = 1000
 
 UNAVAILABLE = "Provider list is temporarily unavailable"
 
-# What each outcome means, in words a caller can put in front of a user. Fixed
-# here rather than taken from the exception, whose message carries the URL that
-# was fetched and the parser's complaint about the document — neither of which is
-# something this API repeats back on an endpoint's behalf.
-_CHECK_DETAIL: dict[str, str] = {
+# Fixed here rather than taken from the exception, whose message carries the URL
+# fetched and the parser's complaint — neither is text this API repeats back.
+_CHECK_DETAIL: dict[EndpointCheckStatus, str] = {
     "ok": "The endpoint published a SMART configuration.",
     "unreachable": "The endpoint could not be reached just now. Some servers refuse "
     "an unauthenticated request for their configuration, so this is worth a warning "
@@ -175,12 +173,8 @@ async def check_endpoint(
     A negative is an answer, not an error: only an issuer this backend refuses to
     fetch is a `400`.
 
-    What this does not say is whether we could *authorize* against the endpoint,
-    which is a separate fact and a stricter one. Knowing the vendor does not
-    settle it either: the vendor is which software serves an endpoint, while
-    authorizing needs a client registration held with that specific tenant. Two
-    hospitals running the same EHR are separate tenants with separate logins. The
-    `configured` flag on a search row is what answers that half.
+    What it does not say is whether we could *authorize* against the endpoint — a
+    separate and stricter fact, which the `configured` flag on a search row answers.
     """
     try:
         checked = await ensure_fetchable(iss)
@@ -211,9 +205,8 @@ def _checked(
 ) -> EndpointCheckResponse:
     """One check's answer, with the fields that depend on each other kept in step.
 
-    ``checkedAt`` is the fetch's own timestamp when there is one, so a cached
-    configuration reports its real age rather than claiming to be current. A
-    failure was never cached, so for those the check is happening now.
+    ``checkedAt`` is the fetch's own timestamp when there is one; a failure was
+    never cached, so those are happening now.
     """
     discovered = result.configuration if result else None
     return EndpointCheckResponse(

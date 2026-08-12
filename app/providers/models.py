@@ -10,62 +10,66 @@ https://hl7.org/fhir/smart-app-launch/conformance.html
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, get_origin
+from typing import Annotated, Any
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     HttpUrl,
     TypeAdapter,
     ValidationError,
-    model_validator,
 )
 
 _URL = TypeAdapter(HttpUrl)
 
 
-def _is_unusable(value: Any, *, wants_list: bool) -> bool:
-    """Whether a published value is junk rather than something to read.
+def _url_or_none(value: Any) -> Any:
+    """Keep a value only if it is a usable absolute URL.
 
-    A list has to be a list of strings. Anything else is a URL, and the test for
-    one is whether it parses as an absolute http(s) URL — asked of pydantic rather
-    than reimplemented, so the answer here cannot drift from the answer the field
-    itself would give, and so a value handed in already parsed still passes.
-
-    Every published shape that has turned up in the wild lands on the same side of
-    this: a null, an empty string, a relative path like ``/manage``, a ``urn:``, a
-    list holding a list, a number. All of them mean the same thing — the server
-    said something about an optional field and none of it can be read.
+    Whether it is one is asked of pydantic rather than reimplemented, so the answer
+    cannot drift from what the field itself would accept, and a value handed in
+    already parsed still passes.
     """
-    if value is None:
-        return True
-    if wants_list:
-        return not isinstance(value, list) or not all(
-            isinstance(item, str) for item in value
-        )
     try:
         _URL.validate_python(value)
     except ValidationError:
-        return True
-    return False
+        return None
+    return value
+
+
+def _strings_or_empty(value: Any) -> Any:
+    """Keep a list only if every item in it is a string."""
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    return []
+
+
+# Optional fields opt into leniency by using these, so the rule is visible where a
+# field is declared rather than applied to everything by a rule elsewhere. A future
+# field of some other type then behaves the way its annotation says.
+LenientUrl = Annotated[HttpUrl | None, BeforeValidator(_url_or_none)]
+LenientStrings = Annotated[list[str], BeforeValidator(_strings_or_empty)]
 
 
 class SMARTConfiguration(BaseModel):
     """A parsed ``.well-known/smart-configuration`` document.
 
-    Only ``authorization_endpoint`` and ``token_endpoint`` are required; the
-    rest are optional because conformant servers routinely omit them — and, it
-    turns out, because they routinely publish them wrong. Optional here means both:
-    a field that is absent and a field that is unusable are the same thing, since
-    neither leaves us anything to read.
+    Only ``authorization_endpoint`` and ``token_endpoint`` are required; the rest
+    are optional because conformant servers routinely omit them — and, it turns out,
+    because they routinely publish them wrong. Both mean the same thing here, since
+    neither leaves anything to read.
 
-    The line that matters is what a value is *for*. The two endpoints are acted on
-    — a user is redirected to one and credentials are posted to the other — so they
-    are strict, and a relative or empty one is refused rather than guessed at.
-    Everything else is description. Rejecting a whole document over the shape of a
-    field nothing reads would refuse servers this backend can authorize against
-    perfectly well.
+    The line is what a value is *for*: the two endpoints are acted on — a user is
+    redirected to one, credentials posted to the other — so a relative or empty one
+    is refused. Everything else is description, and rejecting a document over a
+    field nothing reads would refuse servers we can authorize against perfectly
+    well. Seen in the wild on servers with good endpoints:
+    ``response_types_supported`` as ``null``, ``scopes_supported`` as a list of
+    lists, ``issuer`` as an empty string, ``jwks_uri`` as a relative path. Each is
+    dropped to the field's default, which is the state a server that never sent it
+    would leave us in — a case this backend already handles.
     """
 
     # Tolerate vendor-specific keys some servers include.
@@ -76,48 +80,19 @@ class SMARTConfiguration(BaseModel):
     authorization_endpoint: HttpUrl
     token_endpoint: HttpUrl
 
-    issuer: HttpUrl | None = None
-    jwks_uri: HttpUrl | None = None
-    introspection_endpoint: HttpUrl | None = None
-    revocation_endpoint: HttpUrl | None = None
-    management_endpoint: HttpUrl | None = None
-    registration_endpoint: HttpUrl | None = None
+    issuer: LenientUrl = None
+    jwks_uri: LenientUrl = None
+    introspection_endpoint: LenientUrl = None
+    revocation_endpoint: LenientUrl = None
+    management_endpoint: LenientUrl = None
+    registration_endpoint: LenientUrl = None
 
-    grant_types_supported: list[str] = Field(default_factory=list)
-    scopes_supported: list[str] = Field(default_factory=list)
-    response_types_supported: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=list)
-    token_endpoint_auth_methods_supported: list[str] = Field(default_factory=list)
-    code_challenge_methods_supported: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_unusable_description(cls, data: Any) -> Any:
-        """Discard optional values that are not the shape they should be.
-
-        Observed in the wild, on servers whose authorize and token endpoints are
-        perfectly good: ``response_types_supported`` sent as ``null``,
-        ``scopes_supported`` sent as a list containing a list, ``issuer`` sent as an
-        empty string, and ``jwks_uri`` sent as a path relative to the base. Each
-        would otherwise fail validation and take the whole document down with it,
-        and none of them is read anywhere.
-
-        Dropping a value falls back to the field's default, which is the same state
-        as a server that never sent it — a path this backend already handles, since
-        plenty of real servers advertise no PKCE and publish no revocation endpoint.
-        So the result is a case already exercised, never a guess.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        cleaned = dict(data)
-        for name, field in cls.model_fields.items():
-            if field.is_required() or name not in cleaned:
-                continue
-            wants_list = get_origin(field.annotation) is list
-            if _is_unusable(cleaned[name], wants_list=wants_list):
-                del cleaned[name]
-        return cleaned
+    grant_types_supported: LenientStrings = Field(default_factory=list)
+    scopes_supported: LenientStrings = Field(default_factory=list)
+    response_types_supported: LenientStrings = Field(default_factory=list)
+    capabilities: LenientStrings = Field(default_factory=list)
+    token_endpoint_auth_methods_supported: LenientStrings = Field(default_factory=list)
+    code_challenge_methods_supported: LenientStrings = Field(default_factory=list)
 
     @property
     def supports_pkce(self) -> bool:

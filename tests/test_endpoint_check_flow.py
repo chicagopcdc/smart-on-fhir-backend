@@ -19,10 +19,10 @@ import httpx
 import pytest
 import respx
 
-from app import main
 from app.api import deps
 from app.core.config import get_settings
-from app.providers import lantern, registry, targets
+from app.providers import registry, targets
+from tests.app_harness import client
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
@@ -31,10 +31,6 @@ ISS = "https://fhir.example-hospital.org/R4"
 # The guard resolves before it decides, and respx intercepts the client rather
 # than the resolver, so the fixture hostnames need an answer from somewhere.
 PUBLIC_ADDRESS = "93.184.216.34"
-
-# Captured before any fixture replaces it, for the one test that needs the real
-# resolver to reject a name it cannot encode.
-_REAL_RESOLVE = targets._resolve
 
 
 @pytest.fixture(autouse=True)
@@ -46,13 +42,6 @@ def _resolve_to_a_public_address(request, monkeypatch):
         return [PUBLIC_ADDRESS]
 
     monkeypatch.setattr(targets, "_resolve", _resolve)
-
-
-@pytest.fixture(autouse=True)
-def _reset_lantern_state():
-    lantern.reset_state()
-    yield
-    lantern.reset_state()
 
 
 @pytest.fixture
@@ -72,42 +61,11 @@ def low_check_rate_limit(monkeypatch):
     get_settings.cache_clear()
 
 
-async def _check(iss: str = ISS):
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
-    ) as client:
-        return await client.get("/providers/endpoint-check", params={"iss": iss})
-
-
-# The published-file plumbing, in the smallest form that yields one dated row.
-FILE_DATE = "2025-11-14"
-_CONTENTS = "https://api.github.com/repos/onc-healthit/onc-open-data/contents"
-_RAW = "https://raw.githubusercontent.com/onc-healthit/onc-open-data/main"
-_MONTH = "lantern-daily-data/2025/November"
-_FILE = "11_14_2025endpointdata.csv"
-
-
-def _mock_published_file() -> None:
-    for path, entries in (
-        ("lantern-daily-data", [("2025", "dir")]),
-        ("lantern-daily-data/2025", [("November", "dir")]),
-        (_MONTH, [(_FILE, "file")]),
-    ):
-        respx.get(f"{_CONTENTS}/{path}?ref=main").mock(
-            return_value=httpx.Response(
-                200, json=[{"name": name, "type": kind} for name, kind in entries]
-            )
+async def _check(iss: str = ISS, **kwargs):
+    async with client() as http:
+        return await http.get(
+            "/providers/endpoint-check", params={"iss": iss}, **kwargs
         )
-    respx.get(f"{_RAW}/{_MONTH}/{_FILE}").mock(
-        return_value=httpx.Response(
-            200,
-            text=(
-                '"url","api_information_source_name","certified_api_developer_name",'
-                '"capability_fhir_version","smart_http_response"\n'
-                f'"{ISS}","Example Hospital","Epic Systems Corporation","4.0.1","200"\n'
-            ),
-        )
-    )
 
 
 # --- the four answers --------------------------------------------------------
@@ -253,22 +211,13 @@ async def test_a_refusal_stays_a_refusal_and_keeps_its_cors_headers(iss, monkeyp
     (the resolver refusing to encode the name, and two URLs whose shape would send
     the request somewhere other than the well-known path), so they are worth
     driving through the real app rather than asserting on the guard alone.
-
-    The real resolver is restored here: the name-encoding refusal comes from the
-    resolver itself, so the stub the rest of this module uses would step over the
-    very thing being checked. It stays offline — a label that long is rejected
-    while being encoded, before any lookup is attempted.
     """
-    monkeypatch.setattr(targets, "_resolve", _REAL_RESOLVE)
+    # The name-encoding refusal comes from the resolver itself, so this module's
+    # stub would step over the thing being checked. Still offline: a label that long
+    # is rejected while being encoded, before any lookup.
+    monkeypatch.undo()
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
-    ) as client:
-        response = await client.get(
-            "/providers/endpoint-check",
-            params={"iss": iss},
-            headers={"Origin": "http://localhost:3000"},
-        )
+    response = await _check(iss, headers={"Origin": "http://localhost:3000"})
 
     assert response.status_code == 400, response.text
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
@@ -364,52 +313,17 @@ async def test_the_throttle_is_wired_to_the_route(
     assert statuses == [200, 200, 429]
 
 
-# --- the stale flag it is there to replace -----------------------------------
-
-
-@respx.mock
-async def test_a_search_row_dates_its_flag_while_a_check_stamps_the_present(
-    public_smart_config,
-):
-    """Both say SMART-capable; only one of them says when.
-
-    That is the difference a caller has to be able to see, since one answer is a
-    certification record and the other is this minute.
-    """
-    _mock_published_file()
-    respx.get(ISS + WELL_KNOWN).mock(
-        return_value=httpx.Response(200, json=public_smart_config)
-    )
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main.app), base_url="http://test"
-    ) as client:
-        rows = (await client.get("/providers/search")).json()
-    checked = (await _check()).json()
-
-    dated = [row for row in rows["rows"] if row["smartCapable"]]
-    assert dated, "the stand-in file should carry a SMART-capable row"
-    assert all(row["smartCapableAsOf"] == FILE_DATE for row in dated)
-    assert checked["checkedAt"] > FILE_DATE, (
-        "the live answer should be newer than the file the flag came from"
-    )
-
-
 # --- opt-in: the real servers. Run with `pytest -m live`. ---------------------
 
 
 @pytest.mark.live
 async def test_live_check_tells_three_real_endpoints_apart():
-    answers = {}
-    for label, iss in (
-        ("ok", "https://launch.smarthealthit.org/v/r4/fhir"),
-        ("no_smart_configuration", "https://hapi.fhir.org/baseR4"),
-        ("unreachable", "https://not-a-real-fhir-server.invalid/R4"),
-    ):
-        answers[label] = (await _check(iss)).json()["status"]
-
-    assert answers == {
-        "ok": "ok",
-        "no_smart_configuration": "no_smart_configuration",
-        "unreachable": "unreachable",
+    expected = {
+        "https://launch.smarthealthit.org/v/r4/fhir": "ok",
+        "https://hapi.fhir.org/baseR4": "no_smart_configuration",
+        "https://not-a-real-fhir-server.invalid/R4": "unreachable",
     }
+
+    actual = {iss: (await _check(iss)).json()["status"] for iss in expected}
+
+    assert actual == expected

@@ -1,33 +1,24 @@
 """Deciding whether a caller-supplied issuer is one we are willing to fetch.
 
-Discovery normally runs against an issuer that has already been checked against a
-provider's allowlist (``app/api/auth.py``), so the set of hosts it can reach is
-fixed by configuration. An endpoint that checks an arbitrary issuer on request has
-no such bound: whatever URL arrives is a URL this process will connect to. That
-makes it a server-side request forgery surface, and the guard below is what
-narrows it back down.
+Discovery normally runs against an issuer already checked against a provider's
+allowlist (``app/api/auth.py``), so configuration fixes the set of hosts it can
+reach. An endpoint that checks an arbitrary issuer has no such bound — whatever URL
+arrives is one this process will connect to — which makes it a server-side request
+forgery surface.
 
-The check lives here rather than inside :class:`~app.providers.discovery.SMARTDiscovery`
-on purpose. Discovery is also used by the authorization flow, whose issuers come
-from the allowlist and legitimately include a FHIR server on localhost during
-development. Refusing private addresses there would break running the stack
-locally while adding nothing, because the allowlist already answers the question.
+The guard lives here rather than in :class:`~app.providers.discovery.SMARTDiscovery`
+because discovery also serves the authorization flow, whose allowlisted issuers
+legitimately include a FHIR server on localhost during development.
 
-The port is deliberately not restricted. Since the answer distinguishes a server
-that replied from one that refused, allowing any port does leave a slow oracle for
-whether something speaks HTTP on a public host — but that is something anyone can
-ask directly and faster, and the endpoints being checked are public by design. The
-counterweight is concrete: ONC's own list carries 31 endpoints on non-default
-ports, most of them on 9443, so restricting to 80 and 443 would refuse real
-certified servers to close a gap that buys an attacker little.
+The port is deliberately unrestricted: ONC's list carries 31 endpoints on
+non-default ports, mostly 9443, and the oracle that allowing any port leaves —
+whether something speaks HTTP on a public host — is one anyone can ask directly
+and faster.
 
-What this does not close: the address checked here and the address httpx
-eventually connects to come from two separate resolutions, so a name that answers
-differently between them is not caught. Closing that needs a transport that
-connects to an already-resolved address while still presenting the original host
-for TLS, which is more machinery than this surface warrants. Redirects are never
-followed, so a redirect into private space reads as an unreachable server rather
-than becoming a second, unchecked fetch.
+Not closed: the address checked here and the one httpx connects to come from two
+separate resolutions, so a name that answers differently between them slips
+through. Redirects are never followed, so a redirect into private space reads as an
+unreachable server rather than a second, unchecked fetch.
 """
 
 from __future__ import annotations
@@ -44,9 +35,9 @@ _CARRIER_GRADE_NAT = ipaddress.ip_network("100.64.0.0/10")
 class UnsafeTarget(ValueError):
     """The issuer is one we refuse to fetch, whatever is behind it.
 
-    These messages are shown to whoever asked, so they say what the rule is and
-    never quote the URL back. Echoing caller input into a response body is how a
-    refusal becomes a way to get text of one's choosing out of this API.
+    These messages reach whoever asked, so they state the rule and never quote the
+    URL back: echoing caller input into a response is how a refusal becomes a way to
+    get text of one's choosing out of this API.
     """
 
 
@@ -57,18 +48,16 @@ class UnresolvedTarget(ValueError):
 async def ensure_fetchable(raw: str) -> str:
     """Return ``raw`` normalized, or raise if we should not connect to it.
 
-    Raises :class:`UnsafeTarget` for an issuer that is malformed or points
-    somewhere off-limits, and :class:`UnresolvedTarget` when the host simply does
-    not exist. Callers want those apart: the first is a bad request, the second is
-    an honest answer about a server that has gone away.
+    The two exceptions are kept apart because callers owe their users different
+    answers: :class:`UnsafeTarget` is a bad request, :class:`UnresolvedTarget` an
+    honest "gone".
     """
     candidate = raw.strip()
     try:
         parts = urlsplit(candidate)
-        # hostname and port are both parsed on access and raise on malformed input
-        # — an unbalanced IPv6 bracket, a port outside 1-65535. Reading them inside
-        # the try is what turns either into a refusal rather than an unhandled error
-        # somewhere further down. The port's value is not wanted, only its parsing.
+        # Both raise on malformed input (an unbalanced IPv6 bracket, a port outside
+        # 1-65535); reading them inside the try turns either into a refusal. The
+        # port's value is unused — only its parsing.
         host = parts.hostname
         _ = parts.port
     except ValueError as exc:
@@ -77,20 +66,18 @@ async def ensure_fetchable(raw: str) -> str:
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
         raise UnsafeTarget("An issuer must be an http or https URL")
 
-    # Credentials in the URL would be sent to whatever host follows the @, and a
-    # reader skimming a log line would attribute the request to the wrong one.
+    # Credentials would be sent to whatever host follows the @, which is also not the
+    # host a reader skimming a log line would take the request to have gone to.
     if parts.username or parts.password:
         raise UnsafeTarget("An issuer must not carry credentials")
 
     if not host:
         raise UnsafeTarget("An issuer must name a host")
 
-    # A FHIR base URL ends before any query or fragment, and one that carries
-    # either cannot be used by the caller that follows: the well-known path is
-    # appended to this string, so a query would swallow it (the request goes to the
-    # base itself with the path buried in the query) and a fragment would discard
-    # it outright. Both would answer about a document that was never fetched.
-    if parts.query or parts.fragment or candidate.endswith(("?", "#")):
+    # A FHIR base URL ends before any query or fragment, and the well-known path is
+    # appended to this string: a query would swallow it, a fragment discard it, and
+    # either would answer about a document that was never fetched.
+    if "?" in candidate or "#" in candidate:
         raise UnsafeTarget("An issuer must not carry a query or fragment")
 
     for address in await _addresses(host):
@@ -104,17 +91,15 @@ def _is_public(address: str) -> bool:
     """Whether ``address`` is one we are willing to open a connection to.
 
     Refused are the ranges that only mean something from inside whichever network
-    this process happens to run in: loopback, the RFC 1918 blocks, the RFC 6598
-    carrier-grade NAT space, and the link-local range that carries cloud instance
-    metadata.
+    this process runs in: loopback, RFC 1918, RFC 6598 carrier-grade NAT, and the
+    link-local range that carries cloud instance metadata.
 
-    Spelled out predicate by predicate rather than deferring to ``is_global``,
-    which is a single flag whose membership has been corrected more than once; the
-    predicates below name what is actually being refused and read the same on every
-    version. The two explicit cases are both ranges the stock predicates have
-    missed: carrier-grade NAT is not ``is_private``, and an IPv4 address written in
-    IPv6 form was not classified by its underlying address until a 3.10-era
-    security fix, so ``[::ffff:10.0.0.1]`` could otherwise read as public.
+    Spelled out predicate by predicate rather than deferring to ``is_global``, a
+    single flag whose membership has been corrected more than once. The two explicit
+    cases are ranges the stock predicates miss: carrier-grade NAT is not
+    ``is_private``, and an IPv4 address written in IPv6 form was not classified by
+    its underlying address until a 3.10-era security fix, so ``[::ffff:10.0.0.1]``
+    could otherwise read as public.
     """
     try:
         ip = ipaddress.ip_address(address)

@@ -41,12 +41,8 @@ class DiscoveryParseError(SMARTDiscoveryError):
 
 @dataclass(frozen=True)
 class DiscoveryResult:
-    """A configuration and when it was actually read off the network.
-
-    ``fetched_at`` is the time of the request that produced the document, not the
-    time it was handed out, so a caller reporting how current its answer is stays
-    honest across a cache hit.
-    """
+    """A configuration and when it was read off the network, so a caller reporting
+    how current its answer is stays honest across a cache hit."""
 
     configuration: SMARTConfiguration
     fetched_at: datetime
@@ -124,18 +120,15 @@ class SMARTDiscovery:
         return result
 
     def _evict(self) -> None:
-        """Keep the cache from growing without bound.
+        """Keep the cache bounded.
 
-        Expired entries were previously read past but never removed, so the cache
-        only ever grew. That is invisible while every issuer reaching it has come
-        from a provider allowlist, and becomes a way to spend this process's memory
-        once a caller can name the issuer: these documents run to tens of
-        kilobytes each.
+        Once a caller can name the issuer, an unbounded cache is a way to spend this
+        process's memory: these documents run to tens of kilobytes each.
 
-        Expired entries go first; if that is not enough, the oldest insertions go
-        too, since dicts preserve insertion order. Evicting a live entry costs one
-        re-fetch and nothing else, which is why a plain bound is enough here and
-        tracking access order would not earn its keep.
+        Expired entries go first, then the oldest insertions, since dicts preserve
+        insertion order. Evicting a live entry costs one re-fetch and nothing else,
+        which is why a plain bound is enough and tracking access order would not
+        earn its keep.
         """
         now = time.monotonic()
         expired = [

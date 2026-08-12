@@ -15,30 +15,24 @@ fails if the shapes that matter stop being represented.
 
 from __future__ import annotations
 
-from typing import get_origin
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 import respx
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.providers.discovery import DiscoveryParseError, SMARTDiscovery
 from app.providers.generic import GenericSMARTProvider, SMARTProviderError
-
-# _is_unusable is reached into deliberately: the question "does this capture still
-# contain something the model would discard" is exactly the one it answers, and
-# restating it here would let the two drift apart silently.
-from app.providers.models import SMARTConfiguration, _is_unusable
+from app.providers.models import SMARTConfiguration
 from tests.app_harness import load_fixture
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
 CORPUS = load_fixture("public_smart_configurations.json")
-SERVERS = [
-    pytest.param(server, id=server["id"]) for server in CORPUS["servers"]
-]
-USABLE = [param for param in SERVERS if param.values[0]["usable"]]
-REFUSED = [param for param in SERVERS if not param.values[0]["usable"]]
+USABLE = [pytest.param(s, id=s["id"]) for s in CORPUS["servers"] if s["usable"]]
+REFUSED = [pytest.param(s, id=s["id"]) for s in CORPUS["servers"] if not s["usable"]]
+SERVERS = USABLE + REFUSED
 
 
 def _provider(**overrides) -> GenericSMARTProvider:
@@ -51,6 +45,10 @@ def _provider(**overrides) -> GenericSMARTProvider:
             **overrides,
         }
     )
+
+
+def _query(url: str) -> dict[str, list[str]]:
+    return parse_qs(urlparse(url).query)
 
 
 def _entry(server_id: str) -> dict:
@@ -80,11 +78,11 @@ async def test_the_shared_adapter_discovers_each_server_and_builds_its_auth_url(
 
     assert route.called
     assert request.url.startswith(str(config.authorization_endpoint))
-    assert f"aud={iss.rstrip('/')}" in request.url.replace("%3A", ":").replace("%2F", "/")
+    assert _query(request.url)["aud"] == [iss.rstrip("/")]
 
     # PKCE follows what the server advertised, not what we would prefer.
     assert (request.code_verifier is not None) == config.supports_pkce
-    assert ("code_challenge=" in request.url) == config.supports_pkce
+    assert ("code_challenge" in _query(request.url)) == config.supports_pkce
 
 
 @respx.mock
@@ -178,7 +176,9 @@ def test_the_token_is_bound_to_the_issuer_we_were_given_not_the_one_discovered()
 
     request = _provider(aud=entry["source"]).build_auth_url(config, "s", ["openid"])
 
-    assert "athena.okta.com" not in request.url.replace("%3A", ":").replace("%2F", "/")
+    # An exact value, not a substring: a partial decode would let this pass without
+    # ever comparing the thing it is about.
+    assert _query(request.url)["aud"] == [entry["source"].rstrip("/")]
 
 
 # --- keeping the corpus honest -----------------------------------------------
@@ -197,20 +197,19 @@ def test_the_corpus_still_covers_the_shapes_that_matter():
     ]
     symmetric = {"client_secret_basic", "client_secret_post"}
     shapes = {
-        "advertises no PKCE": [c for c in usable if not c.supports_pkce],
-        "advertises no auth methods": [
-            c for c in usable if not c.token_endpoint_auth_methods_supported
-        ],
-        "advertises only asymmetric auth": [
-            c
-            for c in usable
-            if c.token_endpoint_auth_methods_supported
+        "advertises no PKCE": any(not c.supports_pkce for c in usable),
+        "advertises no auth methods": any(
+            not c.token_endpoint_auth_methods_supported for c in usable
+        ),
+        "advertises only asymmetric auth": any(
+            c.token_endpoint_auth_methods_supported
             and not symmetric & set(c.token_endpoint_auth_methods_supported)
-        ],
-        "publishes no revocation endpoint": [
-            c for c in usable if c.revocation_endpoint is None
-        ],
-        "publishes no issuer": [c for c in usable if c.issuer is None],
+            for c in usable
+        ),
+        "publishes no revocation endpoint": any(
+            c.revocation_endpoint is None for c in usable
+        ),
+        "publishes no issuer": any(c.issuer is None for c in usable),
     }
 
     missing = [shape for shape, found in shapes.items() if not found]
@@ -283,24 +282,32 @@ def test_the_entries_kept_for_malformed_metadata_still_carry_some():
     for server in CORPUS["servers"]:
         if server["kind"] != "regression":
             continue
-        raw = server["configuration"]
+
         junk = {
             name: value
-            for name, value in raw.items()
-            if name in SMARTConfiguration.model_fields
-            and name not in ("authorization_endpoint", "token_endpoint")
-            and _is_unusable(
-                value,
-                wants_list=get_origin(
-                    SMARTConfiguration.model_fields[name].annotation
-                )
-                is list,
-            )
+            for name, value in server["configuration"].items()
+            if (field := SMARTConfiguration.model_fields.get(name))
+            and not field.is_required()
+            and not _parses_as(field.annotation, value)
         }
         assert junk, (
             f"{server['id']} no longer publishes anything malformed, so it no "
             "longer covers the tolerance it was captured for"
         )
+
+
+def _parses_as(annotation, value) -> bool:
+    """Whether a raw value would satisfy its field on its own terms.
+
+    Asked of the annotation directly rather than through the model, because the
+    model is what applies the leniency being tested for — run through it, every
+    value looks fine.
+    """
+    try:
+        TypeAdapter(annotation).validate_python(value)
+    except ValidationError:
+        return False
+    return True
 
 
 def test_every_entry_says_where_it_came_from_and_why_it_is_here():

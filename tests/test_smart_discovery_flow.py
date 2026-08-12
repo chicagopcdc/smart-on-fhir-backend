@@ -245,12 +245,11 @@ async def test_the_cache_does_not_grow_without_bound(epic_smart_config):
 
     for host in "abcde":
         await discovery.fetch_result(f"https://{host}.example/fhir")
-    filled = route.call_count
+    assert route.call_count == 5
 
     await discovery.fetch_result("https://e.example/fhir")
     await discovery.fetch_result("https://a.example/fhir")
 
-    assert filled == 5
     assert route.call_count == 6, (
         "the newest issuer should still be cached and the oldest re-fetched"
     )

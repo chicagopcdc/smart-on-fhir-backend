@@ -527,18 +527,14 @@ class EndpointCheckResponse(APIModel):
         examples=["https://launch.smarthealthit.org/v/r4/fhir"],
     )
     status: EndpointCheckStatus = Field(
-        description="`ok` when the endpoint published a configuration this backend "
-        "can use. `unreachable` when it could not be reached or answered an error. "
-        "`no_smart_configuration` when it answered but publishes none, which is a "
-        "settled no rather than a bad moment. `invalid_smart_configuration` when it "
-        "publishes something that cannot be used to authorize."
+        description="`no_smart_configuration` is a settled no, `unreachable` a bad "
+        "moment worth retrying. `detail` carries the sentence to show a user."
     )
     reachable: bool = Field(
-        description="Whether the endpoint answered at all. True alongside "
-        "`no_smart_configuration`: a server can be perfectly healthy and still not "
-        "do SMART, and a caller retries one of those and not the other. False means "
-        "unconfirmed rather than broken — some vendors refuse an unauthenticated "
-        "request for their configuration."
+        description="Whether the endpoint answered at all — true alongside "
+        "`no_smart_configuration`, since a healthy server need not do SMART. False "
+        "means unconfirmed rather than broken: some vendors refuse an "
+        "unauthenticated configuration request."
     )
     smart_capable: bool = Field(
         description="Whether the endpoint can be used to authorize right now. True "
