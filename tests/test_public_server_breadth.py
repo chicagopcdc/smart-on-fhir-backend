@@ -257,6 +257,61 @@ def test_one_unreadable_optional_field_does_not_cost_the_whole_document(field, v
     )
 
 
+@pytest.mark.parametrize(
+    "field,sent,kept",
+    [
+        pytest.param(
+            "code_challenge_methods_supported", ["S256", None], ["S256"], id="pkce"
+        ),
+        pytest.param(
+            "token_endpoint_auth_methods_supported",
+            ["private_key_jwt", 42],
+            ["private_key_jwt"],
+            id="auth-methods",
+        ),
+        pytest.param("scopes_supported", ["openid", None, "fhirUser"],
+                     ["openid", "fhirUser"], id="scopes"),
+    ],
+)
+def test_one_bad_item_does_not_discard_the_readable_rest_of_a_list(field, sent, kept):
+    """Both fields here decide behaviour, so emptying them fails quietly.
+
+    An empty `code_challenge_methods_supported` is indistinguishable from a server
+    that advertises no PKCE, and an empty `token_endpoint_auth_methods_supported`
+    is the one case that falls back to sending a client secret — which is exactly
+    what a server advertising only `private_key_jwt` must never be sent. Dropping
+    the whole list on one bad item turns a document we would have refused outright
+    into a silent downgrade.
+    """
+    config = SMARTConfiguration.model_validate(
+        {
+            "authorization_endpoint": "https://ok.example/authorize",
+            "token_endpoint": "https://ok.example/token",
+            field: sent,
+        }
+    )
+
+    assert getattr(config, field) == kept
+
+
+def test_the_asymmetric_only_guard_survives_a_malformed_neighbour():
+    """The consequence of the above, at the layer that acts on it.
+
+    A stray item alongside `private_key_jwt` must not turn the refusal into a
+    client_secret_basic request.
+    """
+    config = SMARTConfiguration.model_validate(
+        {
+            "authorization_endpoint": "https://ok.example/authorize",
+            "token_endpoint": "https://ok.example/token",
+            "token_endpoint_auth_methods_supported": ["private_key_jwt", 42],
+        }
+    )
+
+    with pytest.raises(SMARTProviderError):
+        _provider(client_secret="a-secret")._client_authentication(config)
+
+
 def test_a_required_endpoint_is_never_treated_that_way():
     """The other half of the rule. These two are acted on, so a value that cannot
     be read is a refusal rather than something to drop and carry on without."""

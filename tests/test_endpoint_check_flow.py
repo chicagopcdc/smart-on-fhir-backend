@@ -200,6 +200,7 @@ async def test_an_issuer_we_refuse_costs_no_outbound_request(iss):
         pytest.param("https://" + "b" * 64 + ".example/fhir", id="unencodable-hostname"),
         pytest.param("https://fhir.example-hospital.org/R4?_format=json", id="a-query"),
         pytest.param("https://fhir.example-hospital.org/R4#x", id="a-fragment"),
+        pytest.param("https://fhir.example-hospital.org\t/R4", id="a-control-character"),
     ],
 )
 async def test_a_refusal_stays_a_refusal_and_keeps_its_cors_headers(iss, monkeypatch):

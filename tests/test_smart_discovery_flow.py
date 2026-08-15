@@ -67,6 +67,13 @@ CERNER_ISS = (
         # The IDNA codec refuses a label over 63 characters before any lookup, and
         # that is not a resolution failure. Uncaught it would be a 500.
         pytest.param("https://" + "a" * 64 + ".com/fhir", id="unencodable-hostname"),
+        # urlsplit deletes these before parsing, so the URL validates as its
+        # cleaned-up self and then goes on carrying them. httpx refuses them with an
+        # error that is neither a status nor a request error, so it would escape.
+        pytest.param("https://8.8.8.8\t/fhir", id="embedded-tab"),
+        pytest.param("https://8.8.8.8\n/fhir", id="embedded-newline"),
+        pytest.param("https://8.8.8.8\r/fhir", id="embedded-carriage-return"),
+        pytest.param("https://8.8.8.8/fh ir", id="embedded-space"),
     ],
 )
 async def test_an_issuer_we_should_not_fetch_is_refused(iss):
@@ -253,6 +260,8 @@ async def test_the_cache_does_not_grow_without_bound(epic_smart_config):
     assert route.call_count == 6, (
         "the newest issuer should still be cached and the oldest re-fetched"
     )
+
+
 
 
 # Failure paths: the flow raises a typed error, not a raw HTTP/JSON exception.

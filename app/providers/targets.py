@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _CARRIER_GRADE_NAT = ipaddress.ip_network("100.64.0.0/10")
+_RESOLVE_TIMEOUT_SECONDS = 5.0
 
 
 class UnsafeTarget(ValueError):
@@ -53,6 +54,14 @@ async def ensure_fetchable(raw: str) -> str:
     honest "gone".
     """
     candidate = raw.strip()
+
+    # urlsplit deletes tabs and newlines before parsing, so a URL carrying them
+    # validates as its cleaned-up self and is then handed on with them still in it.
+    # httpx refuses those characters with an error that is neither a status error nor
+    # a request error, so it would leave here unhandled — a 500 with no CORS headers.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate):
+        raise UnsafeTarget("An issuer must not contain spaces or control characters")
+
     try:
         parts = urlsplit(candidate)
         # Both raise on malformed input (an unbalanced IPv6 bracket, a port outside
@@ -139,8 +148,14 @@ async def _resolve(host: str) -> list[str]:
     """
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
+        # Bounded because the caller picks the name: the lookup runs on asyncio's
+        # shared thread pool, and a name delegated to a nameserver that never answers
+        # would hold one of those threads for the system resolver's own timeout.
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+            timeout=_RESOLVE_TIMEOUT_SECONDS,
+        )
+    except (socket.gaierror, asyncio.TimeoutError) as exc:
         raise UnresolvedTarget(f"{host} does not resolve") from exc
     except UnicodeError as exc:
         # A name the resolver will not even encode: the IDNA codec rejects a label

@@ -40,10 +40,17 @@ def _url_or_none(value: Any) -> Any:
 
 
 def _strings_or_empty(value: Any) -> Any:
-    """Keep a list only if every item in it is a string."""
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return value
-    return []
+    """Keep the readable items of a list and discard the rest.
+
+    Per item rather than all-or-nothing, because dropping a whole list over one bad
+    entry does not fail loudly — it leaves a shorter list that reads as the server's
+    own answer. ``["S256", null]`` becoming ``[]`` would turn PKCE off silently, and
+    ``["private_key_jwt", 42]`` becoming ``[]`` would look like a server advertising
+    no auth method at all, which is the one case that falls back to sending a secret.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 # Optional fields opt into leniency by using these, so the rule is visible where a

@@ -115,6 +115,10 @@ class SMARTDiscovery:
             configuration=config, fetched_at=datetime.now(timezone.utc)
         )
         if self._cache_ttl > 0:
+            # Removed first so a re-fetch moves to the back. Assigning to a key that
+            # is already present keeps its original position, which would make the
+            # entry that was just refreshed the next one evicted.
+            self._cache.pop(base, None)
             self._cache[base] = (time.monotonic() + self._cache_ttl, result)
             self._evict()
         return result
