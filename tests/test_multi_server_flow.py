@@ -37,7 +37,7 @@ from tests.app_harness import (
 SERVERS = [
     pytest.param({**EPIC_SANDBOX, "confidential": True}, id="epic"),
     pytest.param({**SMART_LAUNCHER, "confidential": False}, id="smart-launcher"),
-    pytest.param({**CERNER_SANDBOX, "confidential": False}, id="cerner"),
+    pytest.param({**CERNER_SANDBOX, "confidential": True}, id="cerner"),
 ]
 
 

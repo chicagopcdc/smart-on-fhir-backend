@@ -88,11 +88,14 @@ class Settings(BaseSettings):
     epic_client_id: str | None = None
     epic_client_secret: str | None = None
 
-    # Cerner / Oracle Health sandbox. Registered as a public client, so it has a
-    # client_id but no secret: PKCE stands in for client authentication. Leave
-    # the id unset until an app is registered in Oracle Health's code Console;
-    # the provider rejects every request until then.
+    # Cerner / Oracle Health sandbox, registered as a confidential client: the
+    # backend holds the secret, so it authenticates at the token endpoint rather
+    # than relying on PKCE alone. Oracle issues the secret through a Cerner Central
+    # system account, reached from the application's details page. Leave both unset
+    # until an app exists in code Console; the provider rejects every request until
+    # then, and configured_providers() omits it from the list entirely.
     cerner_client_id: str | None = None
+    cerner_client_secret: str | None = None
 
     # Public SMART App Launcher (launch.smarthealthit.org). It is a shared test
     # server that does not validate the client_id, so a default lets the flow run

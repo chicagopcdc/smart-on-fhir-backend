@@ -7,6 +7,29 @@ _redirect_uri = _settings.frontend_hostname.rstrip("/") + "/auth/callback"
 
 _DEFAULT_SCOPES = "launch/patient patient/*.read openid profile offline_access"
 
+# Cerner grants no wildcard: its scopes_supported enumerates one entry per resource
+# type, so `patient/*.read` would be asking for something it never offers. These are
+# the types the default fetch tier reads, and each was checked against what the
+# tenant advertises. A single Observation.read covers both the vital-signs and the
+# laboratory rows, which are one FHIR type split by category on our side.
+_CERNER_SCOPES = " ".join(
+    [
+        "launch/patient",
+        "openid",
+        "profile",
+        "offline_access",
+        "patient/Patient.read",
+        "patient/AllergyIntolerance.read",
+        "patient/Condition.read",
+        "patient/DiagnosticReport.read",
+        "patient/Encounter.read",
+        "patient/Immunization.read",
+        "patient/MedicationRequest.read",
+        "patient/Observation.read",
+        "patient/Procedure.read",
+    ]
+)
+
 # Per-provider registration data that a SMART server does NOT advertise:
 # the client credentials, where the EHR redirects back to, and the scopes we
 # request. Endpoints and capabilities are discovered at runtime instead.
@@ -63,13 +86,19 @@ EHR_CONFIGS = {
     },
     # Cerner / Oracle Health sandbox, registered as a public client. Discovery
     # advertises S256, so the same adapter turns on PKCE automatically.
+    # Cerner serves one tenant's data at a different host per persona, and the host
+    # decides who may sign in: fhir-myrecord is where a patient authenticates to
+    # reach their own record, fhir-ehr-code where a clinician reaches the patients
+    # they are authorized for. Each publishes its own discovery document naming a
+    # different authorize endpoint, so the issuer is what selects the persona. This
+    # is the patient one, matching an application registered as patient-facing.
     "CERNER_SANDBOX": {
         "client_id": _settings.cerner_client_id,
-        "client_secret": None,
+        "client_secret": _settings.cerner_client_secret,
         "redirect_uri": _redirect_uri,
-        "scopes": _DEFAULT_SCOPES,
+        "scopes": _CERNER_SCOPES,
         "allowed_issuers": [
-            "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+            "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
         ],
     },
 }

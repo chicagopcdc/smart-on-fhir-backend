@@ -15,9 +15,10 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
 os.environ["EPIC_SANDBOX_CLIENT_ID"] = "test-sandbox-client-id"
 os.environ["EPIC_SANDBOX_CLIENT_SECRET"] = "test-sandbox-client-secret"
-# A public-client sandbox registered without a secret; PKCE stands in for a
-# client secret, so no CERNER_CLIENT_SECRET is set.
+# A confidential client: the registered application holds a secret, so the token
+# exchange authenticates with HTTP Basic rather than leaning on PKCE alone.
 os.environ["CERNER_CLIENT_ID"] = "test-cerner-client-id"
+os.environ["CERNER_CLIENT_SECRET"] = "test-cerner-client-secret"
 os.environ["FRONTEND_HOSTNAME"] = "http://localhost:3000"
 # Throttling off by default so request-heavy flow tests are never rate limited;
 # the one rate-limit test re-enables it for its own duration.
