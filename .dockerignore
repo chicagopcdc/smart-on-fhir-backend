@@ -1,0 +1,17 @@
+# Everything is excluded, and the image's inputs are named below. A file has to
+# be listed to reach the build, so nothing new can enter the context by being
+# forgotten — not a .env holding real client credentials, not an editor's
+# directory, not the history in .git.
+*
+
+!app/
+!migrations/
+!alembic.ini
+!pyproject.toml
+!poetry.lock
+
+# The last matching line wins, so these come after the inclusions above. Byte
+# cache from a host running a different interpreter is worse than useless in
+# the image.
+**/__pycache__/
+**/*.py[cod]
