@@ -62,9 +62,12 @@ SMART_LAUNCHER = {
 }
 CERNER_SANDBOX = {
     "provider": "CERNER_SANDBOX",
-    "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
-    "authorize_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/protocols/oauth2/profiles/smart-v1/personas/provider/authorize",
-    "token_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/hosts/fhir-ehr-code.cerner.com/protocols/oauth2/profiles/smart-v1/token",
+    # The patient persona. Cerner serves one tenant at a different host per persona
+    # and the host is what decides who may sign in, so the issuer selects between a
+    # patient reaching their own record and a clinician reaching their patients'.
+    "iss": "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+    "authorize_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/protocols/oauth2/profiles/smart-v1/personas/patient/authorize",
+    "token_url": "https://authorization.cerner.com/tenants/ec2458f2-1e24-41c8-b71b-0e701af7583d/hosts/fhir-myrecord.cerner.com/protocols/oauth2/profiles/smart-v1/token",
     "smart_config": "cerner_smart_config.json",
     # Captured from Cerner's open endpoint, which is the unauthenticated view of
     # the same tenant as the configured issuer, so the data is Oracle Health's

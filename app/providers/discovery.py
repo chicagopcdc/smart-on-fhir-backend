@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 from pydantic import ValidationError
@@ -37,13 +39,34 @@ class DiscoveryParseError(SMARTDiscoveryError):
     """The document was fetched but is not a valid SMART configuration."""
 
 
-class SMARTDiscovery:
-    """Fetches and caches SMART configuration documents, keyed by issuer."""
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """A configuration and when it was read off the network, so a caller reporting
+    how current its answer is stays honest across a cache hit."""
 
-    def __init__(self, cache_ttl: float = 900.0, timeout: float = 10.0) -> None:
+    configuration: SMARTConfiguration
+    fetched_at: datetime
+
+
+class SMARTDiscovery:
+    """Fetches and caches SMART configuration documents, keyed by issuer.
+
+    The cache holds successes only, for ``cache_ttl`` seconds and at most
+    ``max_entries`` of them. Failures are deliberately not cached: a server that
+    blips would otherwise stay unusable for the rest of the window, which is a far
+    worse trade than re-asking.
+    """
+
+    def __init__(
+        self,
+        cache_ttl: float = 900.0,
+        timeout: float = 10.0,
+        max_entries: int = 512,
+    ) -> None:
         self._cache_ttl = cache_ttl
         self._timeout = timeout
-        self._cache: dict[str, tuple[float, SMARTConfiguration]] = {}
+        self._max_entries = max_entries
+        self._cache: dict[str, tuple[float, DiscoveryResult]] = {}
 
     def clear(self) -> None:
         """Drop every cached configuration, forcing the next fetch to re-discover."""
@@ -51,14 +74,18 @@ class SMARTDiscovery:
 
     async def fetch(self, iss: str) -> SMARTConfiguration:
         """Return the parsed SMART configuration for ``iss``."""
+        return (await self.fetch_result(iss)).configuration
+
+    async def fetch_result(self, iss: str) -> DiscoveryResult:
+        """Return the configuration for ``iss`` alongside when it was fetched."""
         # Normalize so a trailing slash neither splits the cache nor doubles up.
         base = iss.rstrip("/")
 
         cached = self._cache.get(base)
         if cached is not None:
-            expires_at, config = cached
+            expires_at, result = cached
             if expires_at > time.monotonic():
-                return config
+                return result
 
         url = base + _WELL_KNOWN_PATH
 
@@ -84,6 +111,35 @@ class SMARTDiscovery:
                 f"Malformed SMART configuration at {url}: {exc}"
             ) from exc
 
+        result = DiscoveryResult(
+            configuration=config, fetched_at=datetime.now(timezone.utc)
+        )
         if self._cache_ttl > 0:
-            self._cache[base] = (time.monotonic() + self._cache_ttl, config)
-        return config
+            # Removed first so a re-fetch moves to the back. Assigning to a key that
+            # is already present keeps its original position, which would make the
+            # entry that was just refreshed the next one evicted.
+            self._cache.pop(base, None)
+            self._cache[base] = (time.monotonic() + self._cache_ttl, result)
+            self._evict()
+        return result
+
+    def _evict(self) -> None:
+        """Keep the cache bounded.
+
+        Once a caller can name the issuer, an unbounded cache is a way to spend this
+        process's memory: these documents run to tens of kilobytes each.
+
+        Expired entries go first, then the oldest insertions, since dicts preserve
+        insertion order. Evicting a live entry costs one re-fetch and nothing else,
+        which is why a plain bound is enough and tracking access order would not
+        earn its keep.
+        """
+        now = time.monotonic()
+        expired = [
+            key for key, (expires_at, _) in self._cache.items() if expires_at <= now
+        ]
+        for key in expired:
+            del self._cache[key]
+
+        while len(self._cache) > self._max_entries:
+            del self._cache[next(iter(self._cache))]

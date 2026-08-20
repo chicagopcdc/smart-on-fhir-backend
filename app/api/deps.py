@@ -43,6 +43,10 @@ def fhir_rate_limit() -> str:
     return get_settings().fhir_rate_limit
 
 
+def endpoint_check_rate_limit() -> str:
+    return get_settings().endpoint_check_rate_limit
+
+
 # What a throttled route answers, for the OpenAPI document. Declared beside the
 # limiter so a route that adds the decorator has the matching documentation to
 # hand, rather than reaching into another router for it.

@@ -138,6 +138,9 @@ async def test_a_row_carries_what_a_caller_needs_to_decide():
             "vendor": "Epic Systems Corporation",
             "fhirVersion": "4.0.1",
             "smartCapable": True,
+            # Dated per row, so a row rendered on its own still says how old its
+            # certification flag is. `GET /providers/endpoint-check` is the live one.
+            "smartCapableAsOf": "2025-11-14",
             "configured": False,
             "provider": None,
         }
@@ -201,6 +204,27 @@ async def test_an_unavailable_source_still_offers_what_we_can_connect_to():
     # known SMART-capable; their vendor is not in ONC's data and is not guessed.
     assert all(row["configured"] and row["smartCapable"] for row in body["rows"])
     assert all(row["vendor"] is None for row in body["rows"])
+    # Undated, because that flag is this backend's own claim rather than a reading
+    # from a published file, and dating it would pass one off as the other.
+    assert all(row["smartCapableAsOf"] is None for row in body["rows"])
+
+
+@respx.mock
+async def test_a_row_dates_the_certification_flag_it_carries():
+    """The flag is ONC's, from a file that can be months old.
+
+    Dated per row so a row rendered on its own still says how old its answer is —
+    the contrast being with `GET /providers/endpoint-check`, which reads the endpoint
+    now and stamps `checkedAt` with the present.
+    """
+    _mock_mirror()
+
+    body = (await _search()).json()
+
+    dated = [row for row in body["rows"] if row["smartCapable"]]
+    assert dated, "the stand-in file should carry a SMART-capable row"
+    assert all(row["smartCapableAsOf"] == body["dataDate"] for row in dated)
+    assert body["dataDate"] == "2025-11-14"
 
 
 @respx.mock

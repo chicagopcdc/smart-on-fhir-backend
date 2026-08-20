@@ -10,15 +10,73 @@ https://hl7.org/fhir/smart-app-launch/conformance.html
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    ValidationError,
+)
+
+_URL = TypeAdapter(HttpUrl)
+
+
+def _url_or_none(value: Any) -> Any:
+    """Keep a value only if it is a usable absolute URL.
+
+    Whether it is one is asked of pydantic rather than reimplemented, so the answer
+    cannot drift from what the field itself would accept, and a value handed in
+    already parsed still passes.
+    """
+    try:
+        _URL.validate_python(value)
+    except ValidationError:
+        return None
+    return value
+
+
+def _strings_or_empty(value: Any) -> Any:
+    """Keep the readable items of a list and discard the rest.
+
+    Per item rather than all-or-nothing, because dropping a whole list over one bad
+    entry does not fail loudly — it leaves a shorter list that reads as the server's
+    own answer. ``["S256", null]`` becoming ``[]`` would turn PKCE off silently, and
+    ``["private_key_jwt", 42]`` becoming ``[]`` would look like a server advertising
+    no auth method at all, which is the one case that falls back to sending a secret.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+# Optional fields opt into leniency by using these, so the rule is visible where a
+# field is declared rather than applied to everything by a rule elsewhere. A future
+# field of some other type then behaves the way its annotation says.
+LenientUrl = Annotated[HttpUrl | None, BeforeValidator(_url_or_none)]
+LenientStrings = Annotated[list[str], BeforeValidator(_strings_or_empty)]
 
 
 class SMARTConfiguration(BaseModel):
     """A parsed ``.well-known/smart-configuration`` document.
 
-    Only ``authorization_endpoint`` and ``token_endpoint`` are required; the
-    rest are optional because conformant servers routinely omit them.
+    Only ``authorization_endpoint`` and ``token_endpoint`` are required; the rest
+    are optional because conformant servers routinely omit them — and, it turns out,
+    because they routinely publish them wrong. Both mean the same thing here, since
+    neither leaves anything to read.
+
+    The line is what a value is *for*: the two endpoints are acted on — a user is
+    redirected to one, credentials posted to the other — so a relative or empty one
+    is refused. Everything else is description, and rejecting a document over a
+    field nothing reads would refuse servers we can authorize against perfectly
+    well. Seen in the wild on servers with good endpoints:
+    ``response_types_supported`` as ``null``, ``scopes_supported`` as a list of
+    lists, ``issuer`` as an empty string, ``jwks_uri`` as a relative path. Each is
+    dropped to the field's default, which is the state a server that never sent it
+    would leave us in — a case this backend already handles.
     """
 
     # Tolerate vendor-specific keys some servers include.
@@ -29,19 +87,19 @@ class SMARTConfiguration(BaseModel):
     authorization_endpoint: HttpUrl
     token_endpoint: HttpUrl
 
-    issuer: HttpUrl | None = None
-    jwks_uri: HttpUrl | None = None
-    introspection_endpoint: HttpUrl | None = None
-    revocation_endpoint: HttpUrl | None = None
-    management_endpoint: HttpUrl | None = None
-    registration_endpoint: HttpUrl | None = None
+    issuer: LenientUrl = None
+    jwks_uri: LenientUrl = None
+    introspection_endpoint: LenientUrl = None
+    revocation_endpoint: LenientUrl = None
+    management_endpoint: LenientUrl = None
+    registration_endpoint: LenientUrl = None
 
-    grant_types_supported: list[str] = Field(default_factory=list)
-    scopes_supported: list[str] = Field(default_factory=list)
-    response_types_supported: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=list)
-    token_endpoint_auth_methods_supported: list[str] = Field(default_factory=list)
-    code_challenge_methods_supported: list[str] = Field(default_factory=list)
+    grant_types_supported: LenientStrings = Field(default_factory=list)
+    scopes_supported: LenientStrings = Field(default_factory=list)
+    response_types_supported: LenientStrings = Field(default_factory=list)
+    capabilities: LenientStrings = Field(default_factory=list)
+    token_endpoint_auth_methods_supported: LenientStrings = Field(default_factory=list)
+    code_challenge_methods_supported: LenientStrings = Field(default_factory=list)
 
     @property
     def supports_pkce(self) -> bool:

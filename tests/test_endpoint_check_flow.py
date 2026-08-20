@@ -1,0 +1,330 @@
+"""`/providers/endpoint-check`: asking an endpoint whether it can be used, now.
+
+The flag on a search row is ONC's, recorded whenever it last probed, and the
+published file it comes from can be months old. So an endpoint that has moved, let
+its certificate lapse, or stopped publishing a SMART configuration still reads as
+connectable, and the user finds out when the login screen never arrives.
+
+These tests drive the four answers a caller can act on through the real route, and
+the two things that make it safe to hand a URL: that a refused issuer costs no
+outbound request, and that nothing an endpoint said is repeated back verbatim.
+
+Discovery is served by respx; everything between it and the response is the real
+application.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+import respx
+
+from app.api import deps
+from app.core.config import get_settings
+from app.providers import registry, targets
+from tests.app_harness import client
+
+WELL_KNOWN = "/.well-known/smart-configuration"
+
+ISS = "https://fhir.example-hospital.org/R4"
+
+# The guard resolves before it decides, and respx intercepts the client rather
+# than the resolver, so the fixture hostnames need an answer from somewhere.
+PUBLIC_ADDRESS = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _resolve_to_a_public_address(request, monkeypatch):
+    if "live" in request.keywords:
+        return  # the live test resolves real hostnames, which is the point of it
+
+    async def _resolve(host: str) -> list[str]:
+        return [PUBLIC_ADDRESS]
+
+    monkeypatch.setattr(targets, "_resolve", _resolve)
+
+
+@pytest.fixture
+def low_check_rate_limit(monkeypatch):
+    """Turn the limiter on with a tiny budget for one test, then restore it.
+
+    Mirrors `low_auth_rate_limit` in tests/test_security.py: the suite runs with
+    throttling off, so an enabled limit has to be scoped to the test that wants it.
+    """
+    monkeypatch.setenv("ENDPOINT_CHECK_RATE_LIMIT", "2/minute")
+    get_settings.cache_clear()
+    deps.limiter.enabled = True
+    deps.limiter.reset()
+    yield
+    deps.limiter.enabled = False
+    deps.limiter.reset()
+    get_settings.cache_clear()
+
+
+async def _check(iss: str = ISS, **kwargs):
+    async with client() as http:
+        return await http.get(
+            "/providers/endpoint-check", params={"iss": iss}, **kwargs
+        )
+
+
+# --- the four answers --------------------------------------------------------
+
+
+@respx.mock
+async def test_a_usable_endpoint_answers_with_where_to_send_the_user(public_smart_config):
+    respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json=public_smart_config)
+    )
+
+    response = await _check()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["reachable"] is True
+    assert body["smartCapable"] is True
+    assert body["authorizationEndpoint"] == public_smart_config["authorization_endpoint"]
+    assert body["tokenEndpoint"] == public_smart_config["token_endpoint"]
+    assert body["iss"] == ISS
+
+
+@respx.mock
+async def test_an_endpoint_that_does_not_do_smart_is_still_reachable():
+    """The distinction the whole endpoint exists for.
+
+    A 404 means the server is healthy and simply does not do SMART — a settled no.
+    Reporting that as unreachable would invite a caller to retry it forever.
+    """
+    respx.get(ISS + WELL_KNOWN).mock(return_value=httpx.Response(404))
+
+    body = (await _check()).json()
+
+    assert body["status"] == "no_smart_configuration"
+    assert body["reachable"] is True, "a server that answered 404 answered"
+    assert body["smartCapable"] is False
+    assert body["authorizationEndpoint"] is None
+
+
+@respx.mock
+async def test_an_endpoint_publishing_something_unusable_is_told_apart():
+    # Reachable, and it published a document — just not one that says where to
+    # authorize, so there is nothing to send the user to.
+    respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json={"issuer": "https://example-hospital.org"})
+    )
+
+    body = (await _check()).json()
+
+    assert body["status"] == "invalid_smart_configuration"
+    assert body["reachable"] is True
+    assert body["smartCapable"] is False
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param({"side_effect": httpx.ConnectError("no route")}, id="no-route"),
+        pytest.param({"side_effect": httpx.ConnectTimeout("timed out")}, id="timeout"),
+        pytest.param({"return_value": httpx.Response(500)}, id="server-error"),
+        pytest.param({"return_value": httpx.Response(403)}, id="refused"),
+    ],
+)
+async def test_an_endpoint_we_cannot_reach_says_so_without_failing(failure):
+    """Every one of these is a 200 carrying a negative, not a 502.
+
+    `POST /auth/connect` answers 502 for all of them together, which is right for
+    a flow that has already started and useless for deciding whether to start one.
+    """
+    respx.get(ISS + WELL_KNOWN).mock(**failure)
+
+    response = await _check()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "unreachable"
+    assert body["reachable"] is False
+    assert body["smartCapable"] is False
+
+
+@respx.mock
+async def test_a_host_that_no_longer_resolves_reads_as_unreachable(monkeypatch):
+    async def _nxdomain(host: str) -> list[str]:
+        raise targets.UnresolvedTarget(f"{host} does not resolve")
+
+    monkeypatch.setattr(targets, "_resolve", _nxdomain)
+
+    response = await _check("https://closed-last-year.example/fhir")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "unreachable"
+    assert not respx.calls, "a name that does not resolve is not worth a connection"
+
+
+# --- safe to hand a URL ------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "iss",
+    [
+        pytest.param("file:///etc/passwd", id="not-http"),
+        pytest.param("http://127.0.0.1:5432/fhir", id="loopback"),
+        pytest.param("http://169.254.169.254/latest/meta-data", id="instance-metadata"),
+        pytest.param("https://user:pw@8.8.8.8/fhir", id="carries-credentials"),
+    ],
+)
+async def test_an_issuer_we_refuse_costs_no_outbound_request(iss):
+    """The security property, asserted as the absence of a request.
+
+    Refusing only after fetching would still leave this endpoint usable to learn
+    what answers on an address reachable only from in here. Nothing is registered
+    with respx deliberately: an attempted request would raise rather than be
+    quietly served, so the guard cannot pass this by being fast.
+    """
+    response = await _check(iss)
+
+    assert response.status_code == 400, response.text
+    assert not respx.calls, "the guard let a request out before refusing"
+    # The refusal says what the rule is; it does not read the URL back out. A
+    # message built from the input would make this a way to place text of one's
+    # choosing in a response.
+    assert iss not in response.json()["detail"]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "iss",
+    [
+        pytest.param("https://" + "b" * 64 + ".example/fhir", id="unencodable-hostname"),
+        pytest.param("https://fhir.example-hospital.org/R4?_format=json", id="a-query"),
+        pytest.param("https://fhir.example-hospital.org/R4#x", id="a-fragment"),
+        pytest.param("https://fhir.example-hospital.org\t/R4", id="a-control-character"),
+    ],
+)
+async def test_a_refusal_stays_a_refusal_and_keeps_its_cors_headers(iss, monkeypatch):
+    """Every refusal has to arrive as a 400 the browser is allowed to read.
+
+    An unhandled exception is answered outside the middleware stack, so it comes
+    back as a 500 with no CORS headers at all — which a frontend cannot even read
+    the reason from. These three inputs each reach the guard by a different route
+    (the resolver refusing to encode the name, and two URLs whose shape would send
+    the request somewhere other than the well-known path), so they are worth
+    driving through the real app rather than asserting on the guard alone.
+    """
+    # The name-encoding refusal comes from the resolver itself, so this module's
+    # stub would step over the thing being checked. Still offline: a label that long
+    # is rejected while being encoded, before any lookup.
+    monkeypatch.undo()
+
+    response = await _check(iss, headers={"Origin": "http://localhost:3000"})
+
+    assert response.status_code == 400, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["detail"]
+    assert not respx.calls
+
+
+@respx.mock
+async def test_what_an_endpoint_says_is_not_repeated_back_to_the_caller():
+    """`detail` is ours, so an endpoint cannot choose what this API tells a user.
+
+    The underlying error carries the URL that was fetched and the parser's
+    complaint about the document, and passing either through would make an
+    endpoint's output part of our response.
+    """
+    respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "authorization_endpoint": "javascript:alert(1)",
+                "token_endpoint": "https://example-hospital.org/token",
+                "note": "<script>alert('reflected')</script>",
+            },
+        )
+    )
+
+    body = (await _check()).json()
+
+    assert body["status"] == "invalid_smart_configuration"
+    assert body["detail"] == (
+        "The endpoint publishes a SMART configuration that cannot be used to sign in."
+    )
+    for value in body.values():
+        assert "script" not in str(value)
+        assert "javascript:" not in str(value)
+        assert WELL_KNOWN not in str(value)
+
+
+# --- what the answer costs, and what it saves --------------------------------
+
+
+@respx.mock
+async def test_a_check_reports_when_it_read_the_endpoint_not_when_it_answered(
+    public_smart_config,
+):
+    """A second check inside the cache window reports the first fetch's time.
+
+    Claiming "checked just now" off a cached document would reintroduce, in
+    miniature, the staleness this endpoint exists to replace.
+    """
+    route = respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json=public_smart_config)
+    )
+
+    first = (await _check()).json()
+    second = (await _check()).json()
+
+    assert route.call_count == 1
+    assert second["checkedAt"] == first["checkedAt"]
+
+
+@respx.mock
+async def test_checking_first_leaves_nothing_for_the_connect_to_repeat(
+    public_smart_config,
+):
+    """The pre-flight is not extra work: it warms the cache the flow then uses.
+
+    Both go through the shared discovery instance, so the check a user pays for
+    before choosing is the fetch `POST /auth/connect` would have made anyway.
+    """
+    route = respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json=public_smart_config)
+    )
+
+    await _check()
+    await registry.discovery.fetch(ISS)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_the_throttle_is_wired_to_the_route(
+    public_smart_config, low_check_rate_limit
+):
+    """Asserted rather than read off the decorator, because this limit is the only
+    thing bounding how fast this backend can be aimed at something."""
+    respx.get(ISS + WELL_KNOWN).mock(
+        return_value=httpx.Response(200, json=public_smart_config)
+    )
+
+    statuses = [(await _check()).status_code for _ in range(3)]
+
+    assert statuses == [200, 200, 429]
+
+
+# --- opt-in: the real servers. Run with `pytest -m live`. ---------------------
+
+
+@pytest.mark.live
+async def test_live_check_tells_three_real_endpoints_apart():
+    expected = {
+        "https://launch.smarthealthit.org/v/r4/fhir": "ok",
+        "https://hapi.fhir.org/baseR4": "no_smart_configuration",
+        "https://not-a-real-fhir-server.invalid/R4": "unreachable",
+    }
+
+    actual = {iss: (await _check(iss)).json()["status"] for iss in expected}
+
+    assert actual == expected
