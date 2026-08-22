@@ -428,6 +428,7 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
 | GET | `/providers/endpoint-check?iss=` | Whether one endpoint is reachable and SMART-capable right now, with the authorize and token endpoints it advertises. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
+| GET | `/health` | Whether the service and its database are up. `503` when the database cannot be reached; this is what the container healthcheck reads. |
 
 Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
 `Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
