@@ -7,8 +7,11 @@ second test is the one that earns the endpoint its place. What it is for is in
 
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy.exc import OperationalError
 
+import app.api.health as _health_module
 from app import main
 from app.core.db import get_session
 from tests.app_harness import app_db as _app_db, client as _client
@@ -45,6 +48,27 @@ async def test_health_answers_rather_than_raises_when_the_store_is_gone():
     # 503 is what a container runtime and a load balancer act on; the body is
     # for whoever goes looking afterwards. A 500 here would say the healthcheck
     # itself broke, which is a different and much less useful thing to report.
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["database"] == "error"
+
+
+async def test_health_answers_rather_than_raises_when_the_query_times_out(monkeypatch):
+    # The _UnreachableStore above raises OperationalError synchronously, which
+    # exercises the immediate-exception path. The production failure mode that
+    # the 2-second bound exists for is asyncio.TimeoutError — a Postgres that
+    # accepts the connection but never sends a response. This test covers that
+    # path by making wait_for raise TimeoutError instead of waiting.
+    async def _raise_timeout(coro, **_kwargs):
+        # Close the coroutine immediately so it does not linger as a warning.
+        coro.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(_health_module.asyncio, "wait_for", _raise_timeout)
+
+    async with _client() as client:
+        response = await client.get("/health")
+
     assert response.status_code == 503
     assert response.json()["status"] == "degraded"
     assert response.json()["database"] == "error"

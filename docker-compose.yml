@@ -8,10 +8,12 @@ name: smart-on-fhir-backend
 # Shared by the two services that run the application image, so they cannot
 # drift onto different databases or different keys.
 x-backend: &backend
-  # Built once, by the app service below, and reused here. Declaring the build
-  # on both would have them race to export the same tag, and giving them a tag
-  # each would mean two definitions that have to stay in step to be telling the
-  # truth about running the same code.
+  # Both services that apply the application image share a tag and a build
+  # context. Docker's content-addressable cache makes building the same
+  # Dockerfile twice idempotent — they converge on the same layers — so
+  # declaring the build on both is safe and lets either service be run in
+  # isolation (e.g. `docker compose run --rm migrate`) without a separate
+  # `docker compose build` step.
   image: smart-on-fhir-backend:local
   # A .env is optional here: everything required has a value below. Copy
   # .env.example to .env when you want to add vendor credentials — what you put
@@ -79,6 +81,8 @@ services:
   # fresh volume gets the full chain.
   migrate:
     <<: *backend
+    build:
+      context: .
     command: ["alembic", "upgrade", "head"]
     depends_on:
       db:

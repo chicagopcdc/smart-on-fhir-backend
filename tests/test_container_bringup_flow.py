@@ -69,9 +69,17 @@ def _port_fields(mapping: str) -> list[str]:
 
 def _environment(service: str) -> dict[str, str]:
     """The environment a service starts with, as a clean checkout resolves it."""
+    raw = _compose()["services"][service]["environment"]
+    if isinstance(raw, list):
+        # Compose accepts environment as either a mapping or a list of
+        # "KEY=VALUE" strings. The ports check guards against this same
+        # shape mismatch; _environment applies the same defence so that a
+        # service converted to list form does not crash with AttributeError.
+        pairs = (item.split("=", 1) for item in raw)
+        return {key: _resolve(value) for key, value in pairs}
     return {
         key: _resolve(value)
-        for key, value in _compose()["services"][service]["environment"].items()
+        for key, value in raw.items()
     }
 
 

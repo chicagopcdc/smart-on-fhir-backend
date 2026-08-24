@@ -19,12 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Response
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import HealthResponse
-from app.core.db import get_session
+from app.core.db import SessionFactory
 
 router = APIRouter(tags=["health"])
 
@@ -42,10 +41,7 @@ logger = logging.getLogger(__name__)
         }
     },
 )
-async def health(
-    response: Response,
-    session: AsyncSession = Depends(get_session),
-) -> HealthResponse:
+async def health(response: Response) -> HealthResponse:
     """Report the service's own state and whether Postgres answers.
 
     ``SELECT 1`` is the whole check: it costs a round trip and proves the pool
@@ -53,6 +49,16 @@ async def health(
     depends on. The status code, not the body, is what a probe reads, so it is
     set from the same verdict the body reports.
     """
+    async def _probe() -> None:
+        # Opened and closed entirely within this coroutine so that the
+        # wait_for below bounds both the query and the session teardown.
+        # FastAPI's dependency-injected sessions are closed by its
+        # AsyncExitStack *after* the handler returns to the ASGI layer,
+        # which means an unreachable Postgres can block the 503 from
+        # reaching the probe long after the query itself timed out.
+        async with SessionFactory() as session:
+            await session.execute(text("SELECT 1"))
+
     try:
         # Bounded here rather than left to whoever is probing. A compose timeout
         # kills the prober, not the query, so against a Postgres that is
@@ -60,9 +66,7 @@ async def health(
         # — this would hold a pooled connection until that query gave up, while
         # the next probe arrives and takes another. The pool is finite, so the
         # endpoint whose job is to answer would be the one to exhaust it.
-        # asyncio.timeout would read better but arrived in 3.11, and this
-        # package still declares 3.10.
-        await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=2)
+        await asyncio.wait_for(_probe(), timeout=2)
     except Exception as exc:
         # Deliberately broad. Every narrower clause is a guess at which failures
         # a database can have, and the one it misses would leave the handler
