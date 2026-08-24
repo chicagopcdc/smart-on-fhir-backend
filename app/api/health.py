@@ -23,11 +23,34 @@ from fastapi import APIRouter, Response
 from sqlalchemy import text
 
 from app.api.schemas import HealthResponse
-from app.core.db import SessionFactory
+from app.core import db
 
 router = APIRouter(tags=["health"])
 
 logger = logging.getLogger(__name__)
+
+_TIMEOUT_SECONDS = 2
+
+# The probe currently in flight, if one has not come back yet. A wedged server
+# is the case this exists for: the probe against it may never return, and
+# starting a fresh one on every subsequent request would take another pooled
+# connection to the same dead server until the pool was gone. One at a time
+# means one connection is at risk, not all of them.
+#
+# Module state is safe here only because the guard below reads it and replaces
+# it with no await in between, so no second request can interleave.
+_in_flight: asyncio.Task | None = None
+
+
+def _retrieve(task: asyncio.Task) -> None:
+    """Read whatever a probe we stopped waiting for ended up raising.
+
+    A task nobody asks about is reported by asyncio as an exception that was
+    never retrieved, which would put a traceback in the log for a failure this
+    endpoint has already handled and answered.
+    """
+    if not task.cancelled():
+        task.exception()
 
 
 @router.get(
@@ -49,24 +72,49 @@ async def health(response: Response) -> HealthResponse:
     depends on. The status code, not the body, is what a probe reads, so it is
     set from the same verdict the body reports.
     """
+    global _in_flight
+
     async def _probe() -> None:
-        # Opened and closed entirely within this coroutine so that the
-        # wait_for below bounds both the query and the session teardown.
-        # FastAPI's dependency-injected sessions are closed by its
-        # AsyncExitStack *after* the handler returns to the ASGI layer,
-        # which means an unreachable Postgres can block the 503 from
-        # reaching the probe long after the query itself timed out.
-        async with SessionFactory() as session:
+        # The session is opened and closed inside the probe rather than taken
+        # from a dependency, because FastAPI closes an injected one from its
+        # AsyncExitStack after the handler has already returned, which puts the
+        # teardown outside anything this handler can bound.
+        #
+        # Reached through the module rather than bound at import, because the
+        # test harness redirects the database by rebinding db.SessionFactory.
+        # A `from ... import SessionFactory` here would keep the process-wide
+        # factory and quietly ignore that.
+        async with db.SessionFactory() as session:
             await session.execute(text("SELECT 1"))
 
+    if _in_flight is not None and not _in_flight.done():
+        # An earlier probe has still not come back, which is itself the answer:
+        # the store it is waiting on has not responded either. Reporting that
+        # beats opening a second connection to the same wedged server.
+        logger.warning("Health check skipped: an earlier probe has not returned")
+        response.status_code = 503
+        return HealthResponse(status="degraded", database="error")
+
+    _in_flight = asyncio.create_task(_probe())
+    _in_flight.add_done_callback(_retrieve)
     try:
-        # Bounded here rather than left to whoever is probing. A compose timeout
-        # kills the prober, not the query, so against a Postgres that is
-        # unreachable rather than refusing — packets dropped, or a wedged server
-        # — this would hold a pooled connection until that query gave up, while
-        # the next probe arrives and takes another. The pool is finite, so the
-        # endpoint whose job is to answer would be the one to exhaust it.
-        await asyncio.wait_for(_probe(), timeout=2)
+        # asyncio.wait, not wait_for. wait_for cancels on timeout and then
+        # *awaits* that cancellation, and the cleanup it waits for is exactly
+        # what blocks against a server that accepts a connection and then stops
+        # answering: closing the session wants a round trip to a socket that
+        # will never reply. Measured against a frozen Postgres, the first probe
+        # never returned at all. wait leaves the task alone, so the bound below
+        # is the bound a caller actually sees.
+        done, _pending = await asyncio.wait({_in_flight}, timeout=_TIMEOUT_SECONDS)
+        if not done:
+            # Cancelled but deliberately not awaited: awaiting is what put us
+            # here. It unwinds in its own time, and the guard above keeps a
+            # second probe from stacking up behind it.
+            _in_flight.cancel()
+            raise TimeoutError(f"no answer within {_TIMEOUT_SECONDS}s")
+        exc = _in_flight.exception()
+        if exc is not None:
+            raise exc
     except Exception as exc:
         # Deliberately broad. Every narrower clause is a guess at which failures
         # a database can have, and the one it misses would leave the handler
@@ -81,8 +129,8 @@ async def health(response: Response) -> HealthResponse:
         # prose locally rather than repeating what an endpoint said, and the
         # 404-over-403 in patients.py. Whoever is on the other end of a red
         # healthcheck is reading the log anyway.
-        # %r, not %s: asyncio.wait_for raises a TimeoutError whose str() is empty,
-        # so the one failure the bound above exists for would log a bare colon.
+        # %r, not %s: several of the failures that land here carry an empty
+        # str(), so the reason would otherwise log as a bare colon.
         logger.warning("Health check could not reach the database: %r", exc)
         response.status_code = 503
         return HealthResponse(status="degraded", database="error")
