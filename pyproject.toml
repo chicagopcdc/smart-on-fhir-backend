@@ -30,7 +30,11 @@ dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "pytest-asyncio (>=1.4.0,<2.0.0)",
     "respx (>=0.23.1,<0.24.0)",
-    "aiosqlite (>=0.22.1,<0.23.0)"
+    "aiosqlite (>=0.22.1,<0.23.0)",
+    # For reading docker-compose.yml in the container bring-up tests. Already
+    # present through uvicorn[standard], but a suite should declare what it
+    # imports rather than lean on someone else's extra staying an extra.
+    "pyyaml (>=6.0.2,<7.0.0)"
 ]
 
 [tool.pytest.ini_options]

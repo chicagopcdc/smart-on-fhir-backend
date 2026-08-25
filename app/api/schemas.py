@@ -562,3 +562,28 @@ class EndpointCheckResponse(APIModel):
         "Contrast `smartCapableAsOf` on a search row, which can be months old.",
         examples=["2026-08-11T19:52:04+00:00"],
     )
+
+
+# --- service health ----------------------------------------------------------
+
+
+class HealthResponse(APIModel):
+    """Whether the service and the store behind it are working.
+
+    The same shape whether the answer is yes or no, so a probe reads one set of
+    keys and a human reads the status. The HTTP status carries the verdict —
+    503 when anything below is not `ok` — because that is what a container
+    runtime and a load balancer act on.
+    """
+
+    status: Literal["ok", "degraded"] = Field(
+        description="`degraded` means the process is answering but something it "
+        "depends on is not.",
+        examples=["ok"],
+    )
+    database: Literal["ok", "error"] = Field(
+        description="Whether a trivial query reached Postgres. The engine connects "
+        "lazily, so a process serving requests proves nothing about the store until "
+        "something asks it.",
+        examples=["ok"],
+    )

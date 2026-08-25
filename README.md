@@ -341,12 +341,15 @@ session that held it stops resolving.
 
 ## Prerequisites
 
-- Python 3.10 or newer
-- Poetry
-- PostgreSQL (running one in a container is the easiest option)
-- Git
+For the Docker Compose path, which is the shortest way to a running backend:
+Docker with Compose v2.24 or newer, and Git. Nothing else.
+
+For running it locally: Python 3.10 or newer, Poetry, a PostgreSQL to point it
+at, and Git.
 
 ## Setup
+
+Only the local path needs this; with Compose there is nothing to install.
 
 Install dependencies:
 
@@ -393,6 +396,74 @@ poetry run python -c "from cryptography.fernet import Fernet; print(Fernet.gener
 
 ## Running it
 
+Two ways in. Docker Compose brings the API and its database up together and
+needs nothing installed but Docker. Running it locally with Poetry gives you
+reload-on-save, which is the better inner loop once you are changing code. Both
+read the same settings.
+
+### With Docker Compose
+
+```bash
+docker compose up
+```
+
+That is the whole thing. The stack builds the image, starts Postgres, waits
+until it is actually accepting connections, applies the migrations, and serves
+the API at http://localhost:8000 with docs at http://localhost:8000/docs.
+
+The public SMART App Launcher works immediately: it is a public client whose id
+the launcher does not validate, so it needs no registration. Epic and Cerner
+need credentials, so copy `.env.example` to `.env`, fill in the ones you have,
+and run `docker compose up` again. Everything in `.env` reaches the containers
+except `DATABASE_URL`, which the stack sets for itself.
+
+`docker compose down` stops the stack and keeps the data. `docker compose down -v`
+throws the database away, and the next `up` migrates a fresh one.
+
+Five variables tune the stack itself, all optional and all with defaults:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `APP_PORT` | `8000` | Host port the API is published on. |
+| `POSTGRES_PORT` | `5433` | Host port Postgres is published on. Not 5432, so a first run does not collide with a Postgres already there. Nothing in the stack reaches the database this way; it is for `psql`. |
+| `POSTGRES_USER` | `smartfhir` | Database user the stack creates and connects as. |
+| `POSTGRES_PASSWORD` | `smartfhir` | Its password. |
+| `POSTGRES_DB` | `smartfhir` | Database name. |
+
+Postgres reads those last three only while its data directory is empty, so change
+them on a fresh volume (`docker compose down -v`) or not at all. Keep them to
+letters, digits, hyphens and underscores, since the connection string is assembled
+from them without escaping. Changed against an
+existing one, the connection string moves and the database does not, and the first
+thing to notice is the migration failing to authenticate.
+
+`docker-compose.yml` carries a development encryption key, which is what makes
+`up` a single command. It is a working Fernet key that says what it is
+(`DEVELOPMENT_ONLY_DO_NOT_USE_IN_PRODUCTION_A=`) and it is not a secret: anything
+encrypted under it is readable by anyone holding the repo. Set
+`TOKEN_ENCRYPTION_KEY` in your environment or in `.env` and it takes over.
+
+#### What the image is
+
+Two stages. The first installs Poetry and resolves `poetry.lock` into a virtual
+environment; the second copies that environment onto a clean base and adds
+`app/`, `migrations/` and `alembic.ini`. Poetry, pip and their caches live only
+in the first stage and never ship, and no compiler is installed in either, since
+every dependency has a prebuilt wheel for both amd64 and arm64. What runs is an
+unprivileged user against code it does not own and cannot modify.
+
+Migrations are a one-shot service of their own rather than something the app
+does on start, so a failed migration is a failed step instead of an application
+that will not stay up. `alembic upgrade head` does nothing when the schema is
+already current, which is what makes restarting safe and a fresh volume
+self-migrating.
+
+It runs one uvicorn worker, for the reason [How long a connection
+lasts](#how-long-a-connection-lasts) gives: refresh coalescing and the rate
+limiter are both per-process.
+
+### Locally with Poetry
+
 Start Postgres. With Docker:
 
 ```bash
@@ -428,6 +499,7 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/providers/search?query=&vendor=&smartOnly=&page=&pageSize=` | Search the national list of FHIR endpoints (ONC Lantern), filtered by EHR vendor and SMART capability. |
 | GET | `/providers/endpoint-check?iss=` | Whether one endpoint is reachable and SMART-capable right now, with the authorize and token endpoints it advertises. |
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
+| GET | `/health` | Whether the service and its database are up. `503` when the database cannot be reached; this is what the container healthcheck reads. |
 
 Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
 `Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,

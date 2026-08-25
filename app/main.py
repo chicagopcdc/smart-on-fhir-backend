@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
-from app.api import auth, deps, patients, providers
+from app.api import auth, deps, health, patients, providers
 from app.core.config import get_settings
 from app.core.db import engine
 from app.fhir import normalize
@@ -39,6 +39,10 @@ TAGS = [
     {
         "name": "providers",
         "description": "Find a server to connect to.",
+    },
+    {
+        "name": "health",
+        "description": "Whether the service and its database are up.",
     },
 ]
 
@@ -104,3 +108,4 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(providers.router)
+app.include_router(health.router)

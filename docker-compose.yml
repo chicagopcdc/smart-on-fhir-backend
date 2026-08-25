@@ -1,0 +1,126 @@
+# The local stack: the API, the Postgres behind it, and the migration that has
+# to run between them. `docker compose up` is the whole setup.
+#
+# This is local bring-up only. The image it builds carries nothing specific to
+# compose, so whatever the deployment target turns out to be can use it as-is.
+name: smart-on-fhir-backend
+
+# Shared by the two services that run the application image, so they cannot
+# drift onto different databases or different keys.
+x-backend: &backend
+  # Both services that apply the application image share a tag and a build
+  # context. Docker's content-addressable cache makes building the same
+  # Dockerfile twice idempotent — they converge on the same layers — so
+  # declaring the build on both is safe and lets either service be run in
+  # isolation (e.g. `docker compose run --rm migrate`) without a separate
+  # `docker compose build` step.
+  image: smart-on-fhir-backend:local
+  # A .env is optional here: everything required has a value below. Copy
+  # .env.example to .env when you want to add vendor credentials — what you put
+  # there is read, and what `environment` names below overrides it, so a
+  # DATABASE_URL written for the Poetry path cannot point these containers at
+  # the host's Postgres.
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-smartfhir}:${POSTGRES_PASSWORD:-smartfhir}@db:5432/${POSTGRES_DB:-smartfhir}
+    # A working Fernet key, so the stack starts without one being generated
+    # first. Set TOKEN_ENCRYPTION_KEY in your environment or .env and it is used
+    # instead; the README says how to generate one.
+    TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-DEVELOPMENT_ONLY_DO_NOT_USE_IN_PRODUCTION_A=}
+
+services:
+  # The major version is the load-bearing part of this pin: a data directory
+  # written by one major is not readable by the next, so bumping it needs a
+  # dump and restore rather than an image swap.
+  db:
+    image: postgres:16-alpine
+    # Keep these to letters, digits, hyphens and underscores. DATABASE_URL above
+    # is assembled by string interpolation and nothing escapes them, so an "@" in
+    # a password splits the host off it (SQLAlchemy reads user "smartfhir" against
+    # host "ss@db" for "p@ss") and a "%" fails the migration, because Alembic
+    # passes the URL through ConfigParser, which reads it as interpolation.
+    #
+    # These three are read by initdb and only while the data directory is empty,
+    # so changing one after a first run moves the DSN and not the database. That
+    # fails at the migration with an authentication error, and the healthcheck
+    # below cannot warn you: pg_isready reports a server as accepting
+    # connections without authenticating against it. Change them on a fresh
+    # volume — `docker compose down -v` — or not at all.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smartfhir}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartfhir}
+      POSTGRES_DB: ${POSTGRES_DB:-smartfhir}
+    ports:
+      # Loopback only, and on 5433 rather than the 5432 something else is
+      # probably already holding. Nothing in the stack reaches the database this
+      # way — the app and the migration go over the compose network — so this is
+      # for psql and nothing else, and a Postgres with default credentials has
+      # no business being offered to whatever network the machine is on. The API
+      # is published normally: being reached is the point of it.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1 forces TCP, and that is the whole point. A bare pg_isready
+      # goes over the unix socket, which the temporary server this image runs
+      # while initdb builds the cluster also answers — so a first start would
+      # report healthy before the database exists and the migration below would
+      # run against nothing. That temporary server sets listen_addresses='',
+      # so a TCP check fails until the real one is listening.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Runs to completion and exits, which is what makes a failed migration a
+  # failed step rather than an application that will not stay up. `upgrade head`
+  # does nothing when the schema is already current, so restarting is free and a
+  # fresh volume gets the full chain.
+  migrate:
+    <<: *backend
+    build:
+      context: .
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    <<: *backend
+    build:
+      context: .
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The runtime image is slim and carries no curl; its interpreter is on
+      # PATH. /health answers 503 when Postgres is unreachable, which urlopen
+      # raises on, so the container goes unhealthy with it.
+      #
+      # The empty ProxyHandler is load-bearing: urlopen otherwise builds one
+      # from HTTP_PROXY, which Docker Desktop injects and a .env may carry, and
+      # nothing exempts loopback from it. A healthy app would be marked
+      # unhealthy because its own healthcheck went out through a proxy.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request as u; u.build_opener(u.ProxyHandler({})).open("http://127.0.0.1:8000/health", timeout=3)
+      # Nothing depends on this verdict and there is no restart policy, so it
+      # drives the STATUS column and little else — but during bring-up that is
+      # the column someone is watching, hence the tighter start_interval.
+      interval: 30s
+      start_interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  pgdata:
