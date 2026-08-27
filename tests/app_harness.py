@@ -81,6 +81,19 @@ def load_fixture(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def save_fixture(name: str, payload) -> None:
+    """Write a fixture back, for a live run re-capturing what a server now says.
+
+    The inverse of ``load_fixture`` and deliberately next to it, so the one place
+    that knows where captures live is the one place that writes them. Two spaces
+    of indent and a trailing newline to match what is already on disk, which keeps
+    a refresh diff to the lines that actually changed.
+    """
+    (_FIXTURES / name).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def token_response(patient_id: str, **overrides) -> dict:
     """What a token endpoint returns for a patient, for a mocked exchange.
 

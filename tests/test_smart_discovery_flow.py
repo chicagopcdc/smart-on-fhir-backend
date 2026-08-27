@@ -1,9 +1,9 @@
 """Discovery flow: from an issuer URL to a usable SMART configuration.
 
-Drives the path a real request takes â€” decide whether the issuer is one we are
+Drives the path a real request takes — decide whether the issuer is one we are
 willing to fetch at all, fetch the server's ``.well-known/smart-configuration``
 through ``FHIRProvider.discover()``, parse it, and read the endpoints and PKCE
-signal an authorization request needs â€” against the real Epic and public discovery
+signal an authorization request needs — against the real Epic and public discovery
 documents, with HTTP mocked by respx.
 """
 
@@ -14,14 +14,22 @@ import pytest
 import respx
 
 from app.providers import targets
+from app.providers.config import EHR_CONFIGS, configured_providers
 from app.providers.discovery import (
     DiscoveryNotFoundError,
     DiscoveryParseError,
     DiscoveryUnreachableError,
     SMARTDiscovery,
 )
+from app.providers.generic import GenericSMARTProvider
 from app.providers.targets import UnresolvedTarget, UnsafeTarget, ensure_fetchable
 from tests import upstream
+from tests.app_harness import (
+    CERNER_SANDBOX,
+    EPIC_SANDBOX,
+    SMART_LAUNCHER,
+    load_fixture,
+)
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
@@ -34,13 +42,33 @@ CERNER_ISS = (
     "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
 )
 
+# Every issuer this backend is configured to authorize against, read from the
+# application rather than restated, so adding a server to the table adds it to
+# the live check too.
+CONFIGURED = [
+    pytest.param(entry, id=entry["provider"].lower().replace("_", "-"))
+    for entry in configured_providers()
+]
+
+# Which live document each saved configuration was captured from, read off the
+# same descriptors the mocked suite serves them through. Taken from there rather
+# than from CONFIGURED because the launcher's allowlisted issuer is the sim form
+# while its capture came from the plain base, and the two publish different
+# documents — and rather than restated here, so that correcting a descriptor
+# moves the mocked and live checks together instead of leaving this one
+# validating a URL nothing else uses.
+CAPTURES = {
+    server["smart_config"]: server["iss"]
+    for server in (CERNER_SANDBOX, EPIC_SANDBOX, SMART_LAUNCHER)
+}
+
 
 # Which issuers we are willing to fetch at all.
 #
 # Table-driven rather than flow-driven on purpose: this is one pure decision with
 # many ways to get it wrong, and the cases below are the ones that would hurt. The
-# journey it guards â€” a refused issuer answering without a request leaving the
-# process â€” is driven end to end in tests/test_endpoint_check_flow.py.
+# journey it guards — a refused issuer answering without a request leaving the
+# process — is driven end to end in tests/test_endpoint_check_flow.py.
 
 
 @pytest.mark.parametrize(
@@ -359,3 +387,78 @@ async def test_live_discovery_against_real_servers(
     ), f"{name} offers no client-secret method this backend can present"
 
 
+@pytest.mark.live
+@pytest.mark.parametrize("entry", CONFIGURED)
+async def test_live_a_configured_issuer_still_answers_what_the_adapter_needs(entry):
+    """Every server this backend offers a login for, against what the adapter
+    reads out of a discovery document rather than against a saved copy of one.
+
+    The two things it reads are checked by using them: the authorization URL a
+    patient would be sent to is built from what came back, and the client
+    authentication the token exchange would present is required to still be one
+    of the two this adapter knows how to send.
+    """
+    name = entry["name"]
+
+    # A longer timeout than the app's default: a live vendor is slower than a
+    # mock, and a timeout here would say "outage" about a server that is up.
+    with upstream.reaching(name):
+        discovered = await SMARTDiscovery(timeout=25.0).fetch(entry["iss"])
+
+    assert discovered.supports_pkce, (
+        f"{name} stopped advertising S256, so the adapter would stop sending a "
+        "code challenge to it"
+    )
+
+    provider = GenericSMARTProvider(
+        client_id="live-check",
+        redirect_uri="http://localhost:3000/auth/callback",
+        aud=entry["iss"],
+    )
+    auth = provider.build_auth_url(discovered, state="live-check", scopes=["openid"])
+
+    assert auth.url.startswith(str(discovered.authorization_endpoint))
+    assert "code_challenge=" in auth.url
+
+    # A confidential client has to find a symmetric method it can present, or
+    # _client_authentication raises instead of completing the exchange. An empty
+    # list stays acceptable: that is the adapter's documented fall back to Basic.
+    methods = set(discovered.token_endpoint_auth_methods_supported)
+    if EHR_CONFIGS[entry["provider"]]["client_secret"] is not None:
+        assert not methods or methods & {"client_secret_basic", "client_secret_post"}, (
+            f"{name} now advertises only {sorted(methods)}, none of which this "
+            "backend can present at the token endpoint"
+        )
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("fixture", sorted(CAPTURES))
+async def test_live_a_captured_configuration_still_matches_its_source(
+    fixture, recapture
+):
+    """What the mocked suite serves, against what the server serves now.
+
+    Field names rather than values, for the same reason the corpus check uses
+    them: an endpoint URL moving is the server's business, while a field arriving
+    or leaving changes what the adapter has to read.
+    """
+    source = CAPTURES[fixture]
+
+    with upstream.reaching(source):
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+            response = await client.get(
+                source + WELL_KNOWN, headers={"Accept": "application/json"}
+            )
+    upstream.served(source, response)
+    assert response.status_code == 200, response.text
+
+    # Read before writing, so a refresh run still compares against what was on
+    # disk when it started rather than against what it has just put there.
+    captured = load_fixture(fixture)
+    published = response.json()
+    recapture(fixture, published)
+
+    assert sorted(published) == sorted(captured), (
+        f"{source} changed which fields it publishes, so {fixture} no longer "
+        "stands in for it"
+    )

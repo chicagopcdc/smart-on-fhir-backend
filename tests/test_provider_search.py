@@ -19,6 +19,7 @@ import respx
 
 from app import main
 from app.providers import config, lantern
+from tests import upstream
 
 REPO = "onc-healthit/onc-open-data"
 BASE = "lantern-daily-data"
@@ -240,3 +241,46 @@ async def test_the_endpoint_the_frontend_calls_is_unchanged():
     assert set(body) == {
         "page", "pageSize", "totalRows", "hasMore", "rows", "source", "dataDate"
     }
+
+
+# --- opt-in: the real published file. Run with `pytest -m live`. --------------
+
+
+@pytest.mark.live
+async def test_live_a_vendor_search_still_finds_endpoints_in_the_published_file():
+    """The search the frontend calls, over the file ONC actually publishes.
+
+    This is where a renamed column shows up as something a user would notice.
+    Four of the five the parser reads are read with `.get()`, so a rename leaves
+    parsing successful and every row's vendor empty: the endpoint keeps answering
+    200 with rows in it, the mocked suite stays green because its stand-in file
+    was renamed to match, and every vendor search quietly returns nothing.
+    """
+    response = await _search(vendor="epic", smartOnly="true")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    if body["source"] != "mirror":
+        # Whether the source is down or has changed is not a question this test
+        # can answer from a degraded search, and the source check in
+        # tests/test_lantern_endpoints.py already asks it directly.
+        upstream.outage(
+            "the Lantern mirror",
+            "the search fell back to the curated list",
+        )
+
+    assert body["dataDate"], "the served file carries no date"
+    assert body["totalRows"] > 0, (
+        "no endpoint in the published file names Epic as its certified developer"
+    )
+
+    rows = body["rows"]
+    assert all(row["vendor"] for row in rows), (
+        "rows came back without a vendor, so the developer column is not being read"
+    )
+    assert all(row["smartCapable"] for row in rows), (
+        "smartOnly returned endpoints that did not answer ONC's SMART probe"
+    )
+    assert any(row["fhirVersion"] for row in rows), (
+        "no row carries a FHIR version, so that column is not being read either"
+    )
