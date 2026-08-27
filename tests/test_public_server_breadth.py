@@ -8,7 +8,7 @@ national list and from public sandboxes rather than written to suit the adapter.
 
 Everything a server contributes lives in the captured manifest under
 `tests/fixtures/`. Adding one means adding an entry there. Where an entry exists
-because it exercises a particular branch, a named test below says which and why —
+because it exercises a particular branch, a named test below says which and why â€”
 the corpus is only evidence if its entries differ, so the last test in the file
 fails if the shapes that matter stop being represented.
 """
@@ -25,6 +25,7 @@ from pydantic import TypeAdapter, ValidationError
 from app.providers.discovery import DiscoveryParseError, SMARTDiscovery
 from app.providers.generic import GenericSMARTProvider, SMARTProviderError
 from app.providers.models import SMARTConfiguration
+from tests import upstream
 from tests.app_harness import load_fixture
 
 WELL_KNOWN = "/.well-known/smart-configuration"
@@ -188,7 +189,7 @@ def test_the_corpus_still_covers_the_shapes_that_matter():
     """Sixteen lookalike servers would prove nothing, so the spread is asserted.
 
     If this fails, entries have been added or replaced until some shape the adapter
-    has to handle stopped being represented — the message names which.
+    has to handle stopped being represented â€” the message names which.
     """
     usable = [
         SMARTConfiguration.model_validate(s["configuration"])
@@ -238,8 +239,8 @@ def test_one_unreadable_optional_field_does_not_cost_the_whole_document(field, v
     optional URL, so the corpus alone cannot hold that case down. Carepaths comes
     closest and is refused anyway, for endpoints that are relative too.
 
-    All five of these mean one thing — the server described itself badly in a field
-    nothing reads — so all five have to land on the same side of the line.
+    All five of these mean one thing â€” the server described itself badly in a field
+    nothing reads â€” so all five have to land on the same side of the line.
     """
     document = {
         "authorization_endpoint": "https://ok.example/authorize",
@@ -278,7 +279,7 @@ def test_one_bad_item_does_not_discard_the_readable_rest_of_a_list(field, sent, 
 
     An empty `code_challenge_methods_supported` is indistinguishable from a server
     that advertises no PKCE, and an empty `token_endpoint_auth_methods_supported`
-    is the one case that falls back to sending a client secret — which is exactly
+    is the one case that falls back to sending a client secret â€” which is exactly
     what a server advertising only `private_key_jwt` must never be sent. Dropping
     the whole list on one bad item turns a document we would have refused outright
     into a silent downgrade.
@@ -332,7 +333,7 @@ def test_the_entries_kept_for_malformed_metadata_still_carry_some():
     and they can only do that while they still publish something malformed. A
     routine re-capture from a server that has since fixed its document would leave
     the validator uncovered with the suite fully green, so this asserts the raw
-    entry rather than the parsed one — the parsed one has already been cleaned up.
+    entry rather than the parsed one â€” the parsed one has already been cleaned up.
     """
     for server in CORPUS["servers"]:
         if server["kind"] != "regression":
@@ -355,7 +356,7 @@ def _parses_as(annotation, value) -> bool:
     """Whether a raw value would satisfy its field on its own terms.
 
     Asked of the annotation directly rather than through the model, because the
-    model is what applies the leniency being tested for — run through it, every
+    model is what applies the leniency being tested for â€” run through it, every
     value looks fine.
     """
     try:
@@ -382,17 +383,26 @@ def test_every_entry_says_where_it_came_from_and_why_it_is_here():
 @pytest.mark.live
 @pytest.mark.parametrize("server", SERVERS)
 async def test_live_each_server_still_publishes_what_was_captured(server):
-    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
-        response = await client.get(
-            server["source"].rstrip("/") + WELL_KNOWN,
-            headers={"Accept": "application/json"},
-        )
+    name = server["label"]
 
+    with upstream.reaching(name):
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+            response = await client.get(
+                server["source"].rstrip("/") + WELL_KNOWN,
+                headers={"Accept": "application/json"},
+            )
+    upstream.served(name, response)
+
+    # A vendor here is one this backend does not hold credentials for and cannot
+    # authorize against, so it is free to refuse an anonymous reader without that
+    # being a change we need to act on. The rule is stricter for the issuers we do
+    # authorize against, in test_smart_discovery_flow.py, where a refusal means the
+    # login this backend offers has quietly stopped being available.
     if response.status_code == 403:
-        pytest.skip("this vendor refuses an unauthenticated configuration request")
+        pytest.skip(f"{name} refuses an unauthenticated configuration request")
 
     assert response.status_code == 200, response.text
     live = response.json()
     assert sorted(live) == sorted(server["configuration"]), (
-        "the server changed which fields it publishes"
+        f"{name} changed which fields it publishes"
     )

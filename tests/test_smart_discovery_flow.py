@@ -1,9 +1,9 @@
 """Discovery flow: from an issuer URL to a usable SMART configuration.
 
-Drives the path a real request takes — decide whether the issuer is one we are
+Drives the path a real request takes â€” decide whether the issuer is one we are
 willing to fetch at all, fetch the server's ``.well-known/smart-configuration``
 through ``FHIRProvider.discover()``, parse it, and read the endpoints and PKCE
-signal an authorization request needs — against the real Epic and public discovery
+signal an authorization request needs â€” against the real Epic and public discovery
 documents, with HTTP mocked by respx.
 """
 
@@ -21,6 +21,7 @@ from app.providers.discovery import (
     SMARTDiscovery,
 )
 from app.providers.targets import UnresolvedTarget, UnsafeTarget, ensure_fetchable
+from tests import upstream
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
@@ -38,8 +39,8 @@ CERNER_ISS = (
 #
 # Table-driven rather than flow-driven on purpose: this is one pure decision with
 # many ways to get it wrong, and the cases below are the ones that would hurt. The
-# journey it guards — a refused issuer answering without a request leaving the
-# process — is driven end to end in tests/test_endpoint_check_flow.py.
+# journey it guards â€” a refused issuer answering without a request leaving the
+# process â€” is driven end to end in tests/test_endpoint_check_flow.py.
 
 
 @pytest.mark.parametrize(
@@ -326,20 +327,35 @@ async def test_doc_missing_required_endpoint_raises_parse_error(make_provider):
 # Opt-in: the same flow against the real servers. Run with `pytest -m live`.
 
 
+# The three bases this module reads, two of which `configured_providers()` does
+# not name: the launcher's plain base rather than its sim form, and Cerner's
+# provider persona rather than its patient one. A case each, so one server going
+# quiet leaves the other two still checked instead of ending the run at the
+# first skip.
+REAL_SERVERS = [
+    pytest.param("Epic sandbox", EPIC_ISS, "/oauth2/token", id="epic"),
+    pytest.param("SMART Launcher", PUBLIC_ISS, "/auth/token", id="launcher"),
+    pytest.param("Cerner sandbox", CERNER_ISS, "/token", id="cerner"),
+]
+
+
 @pytest.mark.live
-async def test_live_discovery_against_real_servers(make_provider):
-    provider = make_provider()
+@pytest.mark.parametrize("name,iss,token_path", REAL_SERVERS)
+async def test_live_discovery_against_real_servers(
+    make_provider, name, iss, token_path
+):
+    with upstream.reaching(name):
+        config = await make_provider().discover(iss)
 
-    epic = await provider.discover(EPIC_ISS)
-    assert epic.supports_pkce
-    assert str(epic.token_endpoint).endswith("/oauth2/token")
+    # All three advertise S256, so the adapter turns PKCE on for every one of
+    # them with no vendor-specific handling.
+    assert config.supports_pkce, f"{name} stopped advertising S256"
+    assert str(config.token_endpoint).endswith(token_path), name
 
-    public = await provider.discover(PUBLIC_ISS)
-    assert public.supports_pkce
-    assert str(public.token_endpoint).endswith("/auth/token")
+    # And all three still offer a secret the adapter knows how to present. Losing
+    # that would leave only private_key_jwt, which it refuses rather than fakes.
+    assert {"client_secret_basic", "client_secret_post"} & set(
+        config.token_endpoint_auth_methods_supported
+    ), f"{name} offers no client-secret method this backend can present"
 
-    # Cerner / Oracle Health advertises S256 too, so the adapter enables PKCE
-    # against it with no vendor-specific handling.
-    cerner = await provider.discover(CERNER_ISS)
-    assert cerner.supports_pkce
-    assert "client_secret_basic" in cerner.token_endpoint_auth_methods_supported
+

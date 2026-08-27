@@ -22,6 +22,7 @@ import respx
 from app.api import deps
 from app.core.config import get_settings
 from app.providers import registry, targets
+from tests import upstream
 from tests.app_harness import client
 
 WELL_KNOWN = "/.well-known/smart-configuration"
@@ -326,5 +327,14 @@ async def test_live_check_tells_three_real_endpoints_apart():
     }
 
     actual = {iss: (await _check(iss)).json()["status"] for iss in expected}
+
+    # The route answers with a word rather than raising, so the outage-or-change
+    # rule has to be read off the answer here instead of off an exception. Only
+    # the endpoint expected to be unreachable can say so and still be right: for
+    # the other two, "unreachable" is this run failing to get there, not a fact
+    # about them, and re-running is the whole response.
+    for iss, want in expected.items():
+        if want != "unreachable" and actual[iss] == "unreachable":
+            upstream.outage(iss, "the check could not reach it")
 
     assert actual == expected
