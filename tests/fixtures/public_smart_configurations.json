@@ -511,7 +511,7 @@
       "source": "https://ehrwebapi.cutecharts.com/radywebapi",
       "kind": "refused",
       "usable": false,
-      "note": "Publishes the endpoints as explicit nulls. Reachable, and still nothing to send a user to.",
+      "note": "Publishes the endpoints as explicit nulls. Reachable, and still nothing to send a user to. The server has since published real endpoints, so this is a historical capture: it still covers the null-endpoint shape, but re-fetching it would no longer reproduce it.",
       "configuration": {
         "authorization_endpoint": null,
         "token_endpoint": null,

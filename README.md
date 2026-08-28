@@ -523,9 +523,75 @@ off them. They are marked deprecated in `/docs`.
 poetry run pytest
 ```
 
-The suite runs offline (HTTP mocked). To also run the opt-in tests that reach the live
-Epic, SMART Launcher, and Cerner discovery documents:
+The suite runs offline. Every outbound request is mocked, which is what makes it fast and
+what makes it fail for one reason only. What it proves is that the application is
+internally consistent with the responses recorded under `tests/fixtures/`.
+
+It cannot prove those recordings still describe the servers they came from, and twice they
+have not. ONC's endpoint list moved, then the mirror it moved to was pruned, and the
+offline suite stayed green through both. The live suite is the other half.
 
 ```bash
-poetry run pytest -m live
+poetry run pytest -m live -rs
 ```
+
+It needs a working internet connection and nothing else: no credentials, no database, no
+containers. It fetches the discovery document from every configured issuer and checks that
+the adapter can still build an authorization URL from it and still recognizes one of the
+client authentication methods on offer; re-checks the sixteen captured public servers;
+resolves ONC's endpoint list and checks that the columns the parser reads are still in the
+published file; and reads a patient record from two servers that need no login, so
+normalization runs against a real response.
+
+`-rs` earns its four characters, because a live run reports two things that need opposite
+reactions:
+
+- **A failure** is a server that answered with something other than what we read before.
+  Someone has to look, because the fixture standing in for it is now fiction.
+- **A skip** is a server that did not answer at all. There is nothing to do but run it
+  again later. The reason names the server, and `-rs` is what prints the reasons.
+
+A skip that never goes away is not weather. It is a server that has gone for good, or a
+URL that has been wrong since the day it was typed, and reading the reasons is the only
+way either becomes visible.
+
+### Refreshing what was captured
+
+When the live suite finds a discovery document that has moved on, this is how the change
+gets folded back into the fast suite:
+
+```bash
+poetry run pytest -m live --refresh-fixtures
+git diff tests/fixtures/
+poetry run pytest
+```
+
+The first command writes each server's current answer over the capture that stands in for
+it, and does so before asserting, so a run that fails still records what it saw. The diff
+is the report of what drifted. The third command says whether the mocked suite still holds
+against the new reality.
+
+The refresh only ever rewrites discovery documents, and never an entry's `id`, `source`,
+`kind`, `note` or `usable` in `public_smart_configurations.json`. That file's `capturedAt`
+moves only when every server in it answered, so a partial sweep cannot claim to be a whole
+one.
+
+It leaves the patient records alone on purpose. `cerner_patient_record.json` and
+`launcher_patient_record.json` were captured with `_count=2`, which the application never
+sends, and the Cerner one holds a search that genuinely timed out, which one of the tests
+exists to exercise. Re-capturing either is a deliberate act rather than a routine one.
+
+One warning worth reading before you commit a refresh. A `regression` entry is kept because
+the document it captured is malformed, and a `refused` one because that document cannot be
+used at all. Both stop covering what they were captured for the moment the server cleans up
+its act, so if `poetry run pytest` fails after a refresh on an entry of either kind, revert
+that entry rather than re-baselining against it: they are the only cover the tolerance in
+`SMARTConfiguration` and the refusal path have.
+
+That is not hypothetical, and it is worth knowing what the live suite will and will not
+tell you about it. The `radysans` entry was captured publishing its endpoints as explicit
+nulls, and now publishes real ones. The live check compares the field names a server
+publishes rather than their values, deliberately, because an endpoint moving is the
+server's business. So it reads that server as unchanged and stays green. The capture still
+covers the null-endpoint shape offline, which is the job it is there for, but it no longer
+mirrors its source, and its note says so.
