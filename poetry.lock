@@ -159,21 +159,6 @@ async_timeout = {version = ">=4.0.3", markers = "python_version < \"3.11.0\""}
 gssauth = ["gssapi ; platform_system != \"Windows\"", "sspilib ; platform_system == \"Windows\""]
 
 [[package]]
-name = "authlib"
-version = "1.5.2"
-description = "The ultimate Python library in building OAuth and OpenID Connect servers and clients."
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "authlib-1.5.2-py2.py3-none-any.whl", hash = "sha256:8804dd4402ac5e4a0435ac49e0b6e19e395357cfa632a3f624dcb4f6df13b4b1"},
-    {file = "authlib-1.5.2.tar.gz", hash = "sha256:fe85ec7e50c5f86f1e2603518bb3b4f632985eb4a355e52256530790e326c512"},
-]
-
-[package.dependencies]
-cryptography = "*"
-
-[[package]]
 name = "backports-asyncio-runner"
 version = "1.2.0"
 description = "Backport of asyncio.Runner, a context manager that controls event loop life cycle."
@@ -1990,4 +1975,4 @@ dev = ["pytest", "setuptools"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "70240115e8232b01cb14023a8f8056276e6c5e68c4609bb992e1b069ae779fd0"
+content-hash = "ba3b262d82c352a12309d8097830c268bd94add1057c8a439be52b0a7c2181ca"
