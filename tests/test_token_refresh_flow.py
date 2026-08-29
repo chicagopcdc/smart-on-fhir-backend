@@ -21,6 +21,7 @@ import respx
 from sqlalchemy import update
 
 from app.auth.models import ProviderToken, utcnow
+from app.core import crypto
 from tests.app_harness import (
     CERNER_SANDBOX as CERNER,
     SMART_LAUNCHER as LAUNCHER,
@@ -262,9 +263,12 @@ async def test_a_refusal_of_a_token_already_replaced_is_not_the_patients_problem
         # lands, the row holds a token this request never presented.
         async with factory() as session:
             await session.execute(
+                # Written as the columns hold them. A bulk update goes straight
+                # to SQL, so it does not pass through the encrypting properties
+                # an instance would.
                 update(ProviderToken).values(
-                    access_token="access-from-the-winner",
-                    refresh_token="refresh-from-the-winner",
+                    encrypted_access_token=crypto.encrypt("access-from-the-winner"),
+                    encrypted_refresh_token=crypto.encrypt("refresh-from-the-winner"),
                     expires_at=utcnow() + timedelta(hours=1),
                 )
             )
@@ -331,7 +335,9 @@ async def test_a_granted_refresh_still_lands_when_a_refused_sibling_got_there_fi
             # Stand in for the worker the provider refused, which reached the
             # row first and dropped the token it was refused over.
             async with factory() as session:
-                await session.execute(update(ProviderToken).values(refresh_token=None))
+                await session.execute(
+                    update(ProviderToken).values(encrypted_refresh_token=None)
+                )
                 await session.commit()
         return exchange(request)
 

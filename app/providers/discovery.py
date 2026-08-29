@@ -24,7 +24,21 @@ _WELL_KNOWN_PATH = "/.well-known/smart-configuration"
 
 
 class SMARTDiscoveryError(Exception):
-    """Base class for discovery failures."""
+    """Base class for discovery failures.
+
+    ``status_code`` is what the server answered with, where it answered at all,
+    carried on the exception rather than only written into its message. The
+    message names the URL fetched and quotes the parser's complaint, neither of
+    which this application repeats back to a caller or writes to a log, so a
+    status left only in there would be readable by parsing prose and no other
+    way. It is also what separates the two failures ``DiscoveryUnreachableError``
+    covers: a server refusing an unauthenticated request is a settled answer, a
+    connection that was never made is a bad moment worth retrying.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class DiscoveryNotFoundError(SMARTDiscoveryError):
@@ -96,10 +110,11 @@ class SMARTDiscovery:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise DiscoveryNotFoundError(
-                    f"No SMART configuration at {url} (HTTP 404)"
+                    f"No SMART configuration at {url} (HTTP 404)", status_code=404
                 ) from exc
             raise DiscoveryUnreachableError(
-                f"{url} returned HTTP {exc.response.status_code}"
+                f"{url} returned HTTP {exc.response.status_code}",
+                status_code=exc.response.status_code,
             ) from exc
         except httpx.RequestError as exc:
             raise DiscoveryUnreachableError(f"Could not reach {url}: {exc!r}") from exc

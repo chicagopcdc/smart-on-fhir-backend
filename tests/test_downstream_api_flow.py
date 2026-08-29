@@ -416,3 +416,165 @@ async def test_reading_without_a_session_is_refused(db_url):
     assert missing.status_code == 401
     assert malformed.status_code == 401
     assert unknown.status_code == 401
+
+
+# --- a grant narrower than the request ----------------------------------------
+
+# Three of the nine FHIR types the default tier reads. The launcher asks for
+# `patient/*.read`, so this is a consent screen where someone ticked a subset,
+# which is the ordinary way a narrowing happens.
+NARROW_SCOPE = (
+    "launch/patient openid offline_access "
+    "patient/Patient.read patient/Condition.read patient/Observation.read"
+)
+WITHHELD = {
+    "AllergyIntolerance",
+    "DiagnosticReport",
+    "Encounter",
+    "Immunization",
+    "MedicationRequest",
+    "Procedure",
+}
+
+
+@respx.mock
+async def test_a_narrowed_grant_reads_what_it_was_given_and_says_so(db_url):
+    """A partial grant is a connection that works partly, not nine mysteries.
+
+    Before this, the stored scope was written and never read: every withheld type
+    was requested anyway, refused with a 403, and reported as a failed read with
+    no explanation, on every read, forever.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(record["patientId"], scope=NARROW_SCOPE),
+            )
+            route = respx.get(url__startswith=LAUNCHER["iss"]).mock(
+                side_effect=serve_record(record)
+            )
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    assert response.status_code == 200, response.text
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "degraded"
+
+    resources = connection["resources"]
+    # Every requested type is still reported, so a consumer needs no new branch to
+    # find out something is missing.
+    assert set(resources) == set(response.json()["types"])
+
+    for name, envelope in resources.items():
+        if name in WITHHELD:
+            assert envelope["status"] == "error", name
+            # Null rather than 403: nothing was asked, so claiming the provider
+            # refused would put words in its mouth.
+            assert envelope["statusCode"] is None, name
+            assert "not granted" in envelope["error"], name
+        else:
+            assert envelope["status"] == "ok", name
+
+    # And the requests were never spent. What a withheld type would have cost is
+    # a round trip and a 403, on every read.
+    requested = {str(call.request.url) for call in route.calls}
+    for withheld in WITHHELD:
+        assert not any(withheld in url for url in requested), (
+            f"{withheld} was fetched from a connection not granted it"
+        )
+    assert any("Condition" in url for url in requested), (
+        "nothing was fetched at all, so this proves nothing about what was skipped"
+    )
+
+
+@respx.mock
+async def test_a_narrowed_grant_names_what_is_missing_in_the_summary(db_url):
+    """The merged view has to be visibly partial rather than look like a thin chart."""
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(record["patientId"], scope=NARROW_SCOPE),
+            )
+            _serve(LAUNCHER, serve_record(record))
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/summary",
+                headers=_auth(body["sessionId"]),
+            )
+
+    summary_body = response.json()
+    assert summary_body["connections"][0]["status"] == "degraded"
+
+    named = {
+        issue["type"]
+        for issue in summary_body["issues"]
+        if "not granted" in issue["error"]
+    }
+    assert WITHHELD <= named, f"the summary does not say what was withheld: {named}"
+
+    # What was granted still fills the chart.
+    assert any(section["items"] for section in summary_body["sections"])
+
+
+@respx.mock
+async def test_a_grant_covering_nothing_asks_for_consent_again(db_url):
+    """The one narrowing where reconnecting is genuinely the fix."""
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(
+                    record["patientId"], scope="launch/patient openid patient/Device.read"
+                ),
+            )
+            route = respx.get(url__startswith=LAUNCHER["iss"]).mock(
+                side_effect=serve_record(record)
+            )
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    assert response.status_code == 200
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "error"
+    assert connection["needsReauthorization"] is True
+    assert not route.calls, "a connection granted nothing still spent requests"
+
+
+@respx.mock
+async def test_a_server_that_states_no_scope_is_read_in_full(db_url):
+    """RFC 6749 §5.1: an omitted scope means the request was granted as asked.
+
+    Reading it as "granted nothing" would turn one quiet server into a record that
+    looks empty, which is the worst way to be wrong about this.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    granted = token_response(record["patientId"])
+    granted.pop("scope")
+
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(http, LAUNCHER, granted)
+            _serve(LAUNCHER, serve_record(record))
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "ok"
+    assert connection["resources"]["Immunization"]["status"] == "ok"
