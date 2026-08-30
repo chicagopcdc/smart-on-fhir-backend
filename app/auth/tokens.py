@@ -38,20 +38,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LiveToken:
-    """An access token that is good to send, and when it stops being so.
+    """An access token that is good to send, and what it is good for.
 
     Returned rather than written back onto the caller's row: a refresh commits
     in a session of its own, so the instance a request is holding still shows
     the token that has just been replaced.
+
+    ``scope`` travels with it for that same reason. A refresh may come back
+    granting less than the one before it, and a caller deciding what to read from
+    the scope on its own instance would be reading the wider one that has just
+    been superseded — asking for types this token no longer covers, and reporting
+    the refusals as the provider's fault.
     """
 
     access_token: str
     expires_at: datetime | None
+    scope: str | None = None
 
     @classmethod
     def of(cls, connection: ProviderToken) -> "LiveToken":
         """What a connection currently holds, read out while its row is loaded."""
-        return cls(connection.access_token, connection.expires_at)
+        return cls(connection.access_token, connection.expires_at, connection.scope)
 
 
 class TokenRefreshError(Exception):
@@ -121,7 +128,11 @@ async def live_token(connection: ProviderToken) -> LiveToken:
     stored = LiveToken.of(connection)
     leeway = get_settings().token_refresh_leeway_seconds
 
-    if not _is_due(connection.expires_at, leeway) or connection.refresh_token is None:
+    # Whether there is a refresh token is a question about the row, so it is asked
+    # of the column. Reading the property would decrypt one only to compare it
+    # against None, and would fail a connection whose access token is perfectly
+    # usable because the refresh token beside it happens to predate a key rotation.
+    if not _is_due(connection.expires_at, leeway) or connection.encrypted_refresh_token is None:
         return stored
 
     async with _lock_for(connection.id):
@@ -148,7 +159,7 @@ async def _refresh(connection_id: int, leeway: int) -> LiveToken:
         if connection is None:
             raise RefreshUnavailable("the connection no longer exists")
         # Whoever held the lock before us may already have done this.
-        if not _is_due(connection.expires_at, leeway) or connection.refresh_token is None:
+        if not _is_due(connection.expires_at, leeway) or connection.encrypted_refresh_token is None:
             return LiveToken.of(connection)
 
         spent = connection.refresh_token
@@ -194,8 +205,14 @@ def _replaced_since(connection: ProviderToken, spent: str) -> bool:
     the absence of a replacement rather than evidence of one — a sibling the
     provider refused clears it — and the two mean opposite things to whoever
     reads them next, so the distinction lives here rather than at each caller.
+
+    Presence is read off the column and the comparison off the value: Fernet
+    ciphertext carries a nonce, so the same token encrypts differently every time
+    and two ciphertexts can never be compared to each other.
     """
-    return connection.refresh_token is not None and connection.refresh_token != spent
+    if connection.encrypted_refresh_token is None:
+        return False
+    return connection.refresh_token != spent
 
 
 async def _store(connection_id: int, spent: str, token_set: TokenSet) -> LiveToken:

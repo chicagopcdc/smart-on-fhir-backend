@@ -98,6 +98,13 @@ _CREDENTIAL_PATTERNS = (
 # could be trusted to stay complete as servers add their own.
 _URL_QUERY = re.compile(r"(https?://[^\s\"'<>]*?)\?[^\s\"'<>]*")
 
+# Anything that could end a line or drive a terminal. A newline in a logged value
+# forges a whole record — one line becomes two, and the second is indistinguishable
+# from something this application wrote. That is not hypothetical here: the reason
+# on an exchange failure is the ``error`` code copied out of an authorization
+# server's JSON body, so its content is the upstream server's to choose.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
 
 def redact(text: str) -> str:
     """Mask anything in ``text`` shaped like a credential or a patient identifier."""
@@ -139,7 +146,9 @@ def _clean(value):
     """
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return redact(value if isinstance(value, str) else str(value))
+    text = redact(value if isinstance(value, str) else str(value))
+    # One value is one value, whatever it arrived containing.
+    return _CONTROL.sub(" ", text)
 
 
 def _payload(record: logging.LogRecord) -> dict:
@@ -254,6 +263,15 @@ def configure_logging(settings: Settings | None = None) -> None:
     firehose of the data this module exists to keep out of logs — and the choice
     must not depend on the root floor happening to stay where it is.
 
+    uvicorn's own loggers have to be taken over rather than left alone. It gives
+    ``uvicorn`` and ``uvicorn.access`` a handler each and sets ``propagate``
+    false, so their records never reach the root handler: they would go on being
+    written in uvicorn's format, which makes ``LOG_FORMAT=json`` a stream that is
+    only mostly JSON, and leaves the access line — request path, query string and
+    all — as the one thing here written without passing through redaction.
+    Clearing those handlers and letting the records propagate puts every line
+    back under one formatter.
+
     A root logger that already has a handler keeps it, so a deployment that
     configures its own logging is not overruled. That deployment takes on the
     redaction rule with it, which is why the handler this function installs is the
@@ -265,3 +283,7 @@ def configure_logging(settings: Settings | None = None) -> None:
     logging.getLogger("app").setLevel(logging.INFO)
     for noisy in ("httpx", "sqlalchemy.engine", "aiosqlite", "asyncpg"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    for served in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        adopted = logging.getLogger(served)
+        adopted.handlers.clear()
+        adopted.propagate = True

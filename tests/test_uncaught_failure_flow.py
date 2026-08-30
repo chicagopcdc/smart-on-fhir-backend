@@ -282,3 +282,28 @@ def test_the_settings_this_runs_under_are_the_shipped_ones():
     """A guard on the fixtures above: they assert against the configured origin."""
     assert ORIGIN in get_settings().resolved_cors_origins
     assert load_fixture(LAUNCHER["smart_config"]), "the launcher capture is still readable"
+
+
+@respx.mock
+async def test_the_deprecated_read_degrades_like_the_route_that_replaced_it(tmp_path):
+    """The route the current frontend still calls answers rather than raising.
+
+    Moving decryption onto the attribute is what lets a connection be reported as
+    unreadable instead of failing the request — but only where someone catches it.
+    This route reads the one connection its session was issued for, so there is
+    nothing to keep intact beside it, and a bare 500 would be all a caller got for
+    a fault the newer routes describe in a sentence.
+    """
+    async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'deprecated.db'}") as factory:
+        async with client() as http:
+            connected, _ = await connect_and_serve(http, LAUNCHER)
+            await _rekey(factory, LAUNCHER["provider"])
+
+            response = await http.get(
+                "/fhir_resources", headers=bearer(connected["sessionId"])
+            )
+
+    assert response.status_code == 502, response.text
+    # Its own legacy shape, which predates {"detail": ...} and stays that way
+    # until the frontend has moved off it.
+    assert "attention" in response.json()["error"]

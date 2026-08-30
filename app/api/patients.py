@@ -230,9 +230,11 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
 
     # What this connection was actually granted, which may be less than was asked
     # for. Reading a type the grant excludes buys a 403 and nothing else, so it is
-    # reported as withheld instead of spent.
-    readable, withheld = scopes.partition(resource_types, token.scope)
-    if not readable:
+    # reported as withheld instead of spent. Taken from the token just renewed
+    # rather than from the row: a refresh may have narrowed the grant, and the
+    # instance this request is holding still shows what it was before.
+    readable, withheld = scopes.partition(resource_types, live.scope)
+    if withheld and not readable:
         return _ConnectionRead.refused(
             token,
             UNGRANTED,
@@ -563,6 +565,22 @@ async def get_all_resource(
         # This shape predates per-connection reporting, so it carries the wording
         # without the flag beside it that says whether reconnecting would help.
         return JSONResponse({"error": _refusal_for(exc).error}, status_code=502)
+    except TokenEncryptionError:
+        # The same fault the per-connection paths report as UNDECRYPTABLE. This
+        # route reads one connection rather than a record, so there is nothing to
+        # keep intact beside it — but it still answers rather than raising, since
+        # the frontend that has not moved off this route yet would otherwise see a
+        # bare 500 for a problem the newer routes describe.
+        logger.error(
+            "Stored token for %s could not be decrypted with any configured key",
+            token_row.provider,
+            **fields(
+                event="connection.token.undecryptable",
+                provider=token_row.provider,
+                patient_id=token_row.patient_id,
+            ),
+        )
+        return JSONResponse({"error": UNDECRYPTABLE.error}, status_code=502)
 
     resources = await service.fetch_fhir_resources(
         live.access_token,

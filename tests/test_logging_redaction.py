@@ -90,6 +90,30 @@ def written():
             logging.getLogger(name).setLevel(level)
 
 
+@pytest.fixture
+def served_by_uvicorn(written):
+    """The logging state a process actually serves in: uvicorn's, then ours.
+
+    ``uvicorn.config.LOGGING_CONFIG`` is what a served process applies at
+    startup, before the application's lifespan runs. Applying it here is what
+    makes the test that follows a real check rather than an observation about
+    pytest's defaults.
+    """
+    import logging.config
+
+    import uvicorn.config
+
+    logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)
+    configure_logging()
+    try:
+        yield written
+    finally:
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            spoken_for = logging.getLogger(name)
+            spoken_for.handlers.clear()
+            spoken_for.propagate = True
+
+
 def _forbidden(logged: str, *, session_id: str, patient_id: str) -> None:
     """Everything this flow handled that a log line must not carry."""
     assert ACCESS_TOKEN not in logged, "an access token reached the log"
@@ -279,3 +303,94 @@ def test_json_format_writes_one_object_per_line(monkeypatch):
     assert record["level"] == "ERROR"
     assert "sig" not in record["message"]
     assert REDACTED in record["message"]
+
+
+# --- one value is one line, whoever supplied the value -------------------------
+
+
+def test_a_value_carrying_a_newline_cannot_forge_a_record(written):
+    """A logged value is data, and a log line is a record. Keep them apart.
+
+    The reachable vector is the reason on a failed exchange, which is the
+    ``error`` code copied verbatim out of an authorization server's JSON body —
+    so its content is the upstream server's to choose, not ours. A newline in it
+    turns one record into two, the second indistinguishable from something this
+    application wrote. The middleware already validates an inbound request id for
+    exactly this reason; every other value needs the same treatment.
+    """
+    from app.core.logging import fields
+
+    forged = "invalid_grant\n2026-01-01T00:00:00.000+00:00 ERROR [app.core.db] rows dropped"
+    logging.getLogger("app.test.injection").warning(
+        "upstream refused", **fields(event="auth.token_exchange.failed", reason=forged)
+    )
+
+    written_lines = [line for line in written.getvalue().splitlines() if line.strip()]
+    assert len(written_lines) == 1, "a supplied value wrote a log record of its own"
+    # Still legible: the value is kept, only its ability to end the line is not.
+    assert "invalid_grant" in written_lines[0]
+    assert "rows dropped" in written_lines[0]
+
+
+def test_the_json_stream_survives_a_value_that_would_break_it(monkeypatch):
+    """Every line has to parse, including the one an upstream server wrote into."""
+    from app.core.config import get_settings
+    from app.core.logging import fields
+
+    monkeypatch.setenv("LOG_FORMAT", "json")
+    get_settings.cache_clear()
+    try:
+        buffer = io.StringIO()
+        handler = build_handler()
+        handler.setStream(buffer)
+        logger = logging.getLogger("app.test.jsoninjection")
+        logger.addHandler(handler)
+        try:
+            logger.error(
+                "upstream refused",
+                **fields(reason='not_json"}\n{"level": "INFO", "message": "all clear'),
+            )
+        finally:
+            logger.removeHandler(handler)
+    finally:
+        get_settings.cache_clear()
+
+    lines = [line for line in buffer.getvalue().splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert json.loads(lines[0])["message"] == "upstream refused"
+
+
+def test_uvicorns_own_records_are_written_by_this_handler_too(served_by_uvicorn):
+    """Otherwise the log is two formats interleaved, and half of it unredacted.
+
+    uvicorn gives its loggers a handler each and turns propagation off, so
+    without being taken over they write in their own format — which makes
+    LOG_FORMAT=json a stream that is only mostly JSON, and leaves the access
+    line's query string as the one thing written without passing through
+    redaction.
+
+    The fixture applies uvicorn's own logging configuration before the
+    application's, because nothing else in this suite does: under pytest those
+    loggers are untouched, so a check written against the default state would
+    pass whether or not anything took them over. What is asserted here only
+    means something because uvicorn has already claimed them.
+    """
+    written = served_by_uvicorn
+    access = logging.getLogger("uvicorn.access")
+    assert access.propagate, "uvicorn.access still bypasses the application's handler"
+    assert not access.handlers, "uvicorn.access still writes through a handler of its own"
+
+    # The shape uvicorn logs an access line in, with a credential in the query.
+    access.info(
+        '%s - "%s %s HTTP/%s" %d',
+        "10.0.1.7:52344",
+        "GET",
+        "/auth/callback?code=4-0AdeuREAL&state=Yl8kQq",
+        "1.1",
+        307,
+    )
+
+    logged = written.getvalue()
+    assert "10.0.1.7:52344" in logged, "the access line did not reach this handler"
+    assert "4-0AdeuREAL" not in logged, "an authorization code reached the log"
+    assert "Yl8kQq" not in logged, "an OAuth state reached the log"

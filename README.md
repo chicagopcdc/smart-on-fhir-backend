@@ -561,9 +561,11 @@ single-process design the image ships:
 
 ## Logs
 
-Every line is written by one handler, configured in `app/core/logging.py`.
-`LOG_FORMAT=text` gives the line a developer reads and `LOG_FORMAT=json` gives one
-object per line; both carry the same fields.
+Every line is written by one handler, configured in `app/core/logging.py` —
+uvicorn's startup and access lines included, which it takes over on the way up so
+that `LOG_FORMAT=json` gives a stream that parses all the way through rather than
+one that is only mostly JSON. `LOG_FORMAT=text` gives the line a developer reads
+and `LOG_FORMAT=json` gives one object per line; both carry the same fields.
 
 ```
 2026-08-29T21:14:07.881+00:00 WARNING [app.api.auth] Upstream discovery failed for

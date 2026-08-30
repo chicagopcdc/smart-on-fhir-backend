@@ -20,12 +20,14 @@ from app.fhir import summary as summary_module
 from tests.app_harness import (
     CERNER_SANDBOX as CERNER,
     SMART_LAUNCHER as LAUNCHER,
+    age_tokens,
     app_db,
     client,
     connect,
     load_fixture,
     mock_server,
     serve_record,
+    token_endpoint,
     token_response,
 )
 
@@ -578,3 +580,87 @@ async def test_a_server_that_states_no_scope_is_read_in_full(db_url):
     [connection] = response.json()["connections"]
     assert connection["status"] == "ok"
     assert connection["resources"]["Immunization"]["status"] == "ok"
+
+
+@respx.mock
+async def test_a_grant_that_permits_no_reading_is_not_read_as_unrestricted(db_url):
+    """Naming a resource and permitting nothing on it is a restriction, not silence.
+
+    ``granted_types`` answers None for a grant it cannot act on, which has to
+    cover a server describing only the session — but a grant of
+    ``patient/Condition.c`` has named a resource and withheld reading it. Folding
+    that into "unrestricted" would fetch every type and collect a 403 for each,
+    which is the behaviour reading the scope at all exists to end.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(
+                    record["patientId"],
+                    scope="launch/patient openid patient/Condition.c",
+                ),
+            )
+            route = respx.get(url__startswith=LAUNCHER["iss"]).mock(
+                side_effect=serve_record(record)
+            )
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "error"
+    assert not route.calls, "a grant permitting no reads still spent requests"
+
+
+@respx.mock
+async def test_a_refresh_that_narrows_the_grant_is_honoured_on_the_same_read(db_url):
+    """The scope a read obeys is the one the token it is using was issued under.
+
+    A refresh commits in a session of its own, so the connection instance this
+    request is holding still shows the wider scope it had a moment ago. Reading
+    from that would ask for types the new token does not cover and report the
+    refusals as the provider's fault.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    narrowed = "launch/patient offline_access patient/Patient.read patient/Condition.read"
+
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_endpoint(
+                    record["patientId"],
+                    on_refresh=lambda granted: httpx.Response(
+                        200, json=granted(scope=narrowed)
+                    ),
+                ),
+            )
+            route = respx.get(url__startswith=LAUNCHER["iss"]).mock(
+                side_effect=serve_record(record)
+            )
+            # Due for renewal, so the read refreshes before it fans out.
+            await age_tokens(factory)
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    assert response.status_code == 200, response.text
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "degraded"
+
+    withheld = connection["resources"]["Immunization"]
+    assert withheld["status"] == "error"
+    assert "not granted" in withheld["error"], (
+        "the read obeyed the scope from before the refresh"
+    )
+    requested = {str(call.request.url) for call in route.calls}
+    assert not any("Immunization" in url for url in requested)
+    assert connection["resources"]["Condition"]["status"] == "ok"

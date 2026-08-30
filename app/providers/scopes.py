@@ -57,22 +57,32 @@ def granted_types(scope: str | None) -> frozenset[str] | None:
     That last case is the important one. Treating "nothing recognizable" as
     "nothing permitted" would turn one unfamiliar spelling into a record that
     reads as empty, which is the worst possible way to be wrong here.
+
+    It is also why an empty set and None are different answers, and the
+    difference is whether any resource scope was recognized at all. A grant of
+    ``patient/Condition.c`` names one and permits no reading of it, which is a
+    restriction to nothing — reading that as "unrestricted" would put us back to
+    fetching every type and collecting a 403 for each.
     """
     if not scope:
         return None
 
     types = set()
+    named_a_resource = False
     for entry in scope.split():
         # v2 permits a search filter on the scope; the type and access are the
         # part before it.
         match = _SCOPE.match(entry.split("?", 1)[0])
-        if not match or not _reads(match["access"]):
+        if not match:
+            continue
+        named_a_resource = True
+        if not _reads(match["access"]):
             continue
         if match["type"] == "*":
             return None
         types.add(match["type"])
 
-    return frozenset(types) or None
+    return frozenset(types) if named_a_resource else None
 
 
 def unreadable(fhir_types: Iterable[str], scope: str | None) -> list[str]:
