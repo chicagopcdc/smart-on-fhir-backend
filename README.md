@@ -572,9 +572,11 @@ is the report of what drifted. The third command says whether the mocked suite s
 against the new reality.
 
 The refresh only ever rewrites discovery documents, and never an entry's `id`, `source`,
-`kind`, `note` or `usable` in `public_smart_configurations.json`. That file's `capturedAt`
-moves only when every server in it answered, so a partial sweep cannot claim to be a whole
-one.
+`kind`, `note` or `usable` in `public_smart_configurations.json`: those say why an entry is
+in the corpus, which is not a question a re-fetch can answer. Each entry carries its own
+`capturedAt`, and a refresh dates the ones it reached and leaves the rest alone. Expect to
+reach most rather than all of them, since one unreachable vendor out of sixteen is the
+ordinary case.
 
 It leaves the patient records alone on purpose. `cerner_patient_record.json` and
 `launcher_patient_record.json` were captured with `_count=2`, which the application never
