@@ -23,13 +23,8 @@ from app.api.schemas import (
     ProviderSearchRow,
     refusal,
 )
-from app.providers import config, lantern, registry
-from app.providers.discovery import (
-    DiscoveryNotFoundError,
-    DiscoveryParseError,
-    DiscoveryResult,
-    DiscoveryUnreachableError,
-)
+from app.providers import config, discovery, lantern, registry
+from app.providers.discovery import DiscoveryResult, SMARTDiscoveryError
 from app.providers.targets import UnresolvedTarget, UnsafeTarget, ensure_fetchable
 
 router = APIRouter(tags=["providers"])
@@ -190,12 +185,8 @@ async def check_endpoint(
 
     try:
         result = await registry.discovery.fetch_result(checked)
-    except DiscoveryNotFoundError:
-        return _checked(checked, "no_smart_configuration")
-    except DiscoveryParseError:
-        return _checked(checked, "invalid_smart_configuration")
-    except DiscoveryUnreachableError:
-        return _checked(checked, "unreachable")
+    except SMARTDiscoveryError as exc:
+        return _checked(checked, discovery.failure_status(exc))
 
     return _checked(checked, "ok", result)
 

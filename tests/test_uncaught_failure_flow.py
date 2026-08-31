@@ -19,8 +19,6 @@ readable, identifiable, and gives nothing away.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 import respx
 from cryptography.fernet import Fernet
@@ -28,7 +26,6 @@ from sqlalchemy import text, update
 
 from app.auth.models import ProviderToken
 from app.core.config import get_settings
-from app.core.logging import build_handler, configure_logging
 from tests.app_harness import (
     CERNER_SANDBOX as CERNER,
     SMART_LAUNCHER as LAUNCHER,
@@ -43,23 +40,9 @@ ORIGIN = "http://localhost:3000"
 
 
 @pytest.fixture
-def written():
-    """The shipped handler over a buffer, so what is asserted is what is written."""
-    import io
-
-    buffer = io.StringIO()
-    handler = build_handler()
-    handler.setStream(buffer)
-    root = logging.getLogger()
-    previous = root.level
-    root.addHandler(handler)
-    configure_logging()
-    root.setLevel(logging.INFO)
-    try:
-        yield buffer
-    finally:
-        root.removeHandler(handler)
-        root.setLevel(previous)
+def written(log_capture):
+    """What the application wrote while these flows ran, at the shipped level."""
+    return log_capture()
 
 
 @respx.mock

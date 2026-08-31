@@ -44,7 +44,7 @@ from app.core.db import (
 )
 from app.core.crypto import TokenEncryptionError
 from app.core.logging import fields
-from app.fhir import normalize, service, summary
+from app.fhir import service, summary
 from app.providers import config, registry, scopes
 from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError
@@ -131,25 +131,26 @@ UNGRANTED = _Refusal(
 )
 
 
-def _withheld_by_scope(entry: dict) -> dict:
-    """The envelope for a resource type the grant does not cover.
-
-    The shape a failed read already produces, so a consumer needs no new branch:
-    this is a type that could not be read, and the reason happens to be one no
-    request to the provider would change. ``statusCode`` is null because nothing
-    was asked — a 403 here would claim the provider refused something it was never
-    sent.
-    """
-    return normalize.failed_response(
-        fhir_type=config.fhir_type_for(entry),
-        error="This connection was not granted access to this resource type",
-        status_code=None,
-    )
-
-
 def _refusal_for(error: tokens.TokenRefreshError) -> _Refusal:
     """How a failure to renew a token reads to whoever asked for the record."""
     return REVOKED if isinstance(error, tokens.ReauthorizationRequired) else UNRENEWABLE
+
+
+def _log_undecryptable(connection: ProviderToken) -> None:
+    """A stored token no configured key opens: ours to fix, not the patient's.
+
+    Written once and called from both read paths, so the event name and the
+    fields under it cannot come to differ between them.
+    """
+    logger.error(
+        "Stored token for %s could not be decrypted with any configured key",
+        connection.provider,
+        **fields(
+            event="connection.token.undecryptable",
+            provider=connection.provider,
+            patient_id=connection.patient_id,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -203,11 +204,13 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     """Read one connection, and say how completely it could be read.
 
     The issuer is the FHIR base URL, so it is also the base for resource calls.
-    The access token comes from storage (decrypted by the ORM) rather than from
-    the URL, so a bearer token never travels as a query parameter — and it is
-    renewed here first where it would otherwise lapse partway through the fan-out
-    below, which is why the token used is the one ``live_token`` hands back and
-    not the one still on the row.
+    The access token is decrypted on attribute access rather than travelling in
+    the URL, so a bearer token is never a query parameter — and a key that no
+    longer fits surfaces here, where the connection can be reported, rather than
+    while the row loads. It is renewed first where it would otherwise lapse
+    partway through the fan-out below, which is why the token used is the one
+    ``live_token`` hands back, along with the scope it was granted under, and not
+    what is still on the row.
     """
     try:
         live = await tokens.live_token(token)
@@ -217,39 +220,12 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
         # Reading the row succeeded; reading what is in it did not. Ours to fix,
         # not the patient's, so it is logged as a fault on this side and the rest
         # of the record is left alone.
-        logger.error(
-            "Stored token for %s could not be decrypted with any configured key",
-            token.provider,
-            **fields(
-                event="connection.token.undecryptable",
-                provider=token.provider,
-                patient_id=token.patient_id,
-            ),
-        )
+        _log_undecryptable(token)
         return _ConnectionRead.refused(token, UNDECRYPTABLE)
 
-    # What this connection was actually granted, which may be less than was asked
-    # for. Reading a type the grant excludes buys a 403 and nothing else, so it is
-    # reported as withheld instead of spent. Taken from the token just renewed
-    # rather than from the row: a refresh may have narrowed the grant, and the
-    # instance this request is holding still shows what it was before.
-    readable, withheld = scopes.partition(resource_types, live.scope)
-    if withheld and not readable:
-        return _ConnectionRead.refused(
-            token,
-            UNGRANTED,
-            {name: _withheld_by_scope(entry) for name, entry in withheld.items()},
-        )
-
-    read = await service.fetch_fhir_resources(
-        live.access_token, token.iss, token.patient_fhir_id, readable
+    resources = await service.fetch_fhir_resources(
+        live.access_token, token.iss, token.patient_fhir_id, resource_types, live.scope
     )
-    # Merged back in the order the caller asked for, so a withheld type keeps its
-    # place among the rest rather than collecting at the end.
-    resources = {
-        name: read[name] if name in read else _withheld_by_scope(entry)
-        for name, entry in resource_types.items()
-    }
 
     failed = [
         name
@@ -261,10 +237,16 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     if len(failed) < len(resources):
         return _ConnectionRead(token, resources, "degraded", None)
 
-    # Nothing came back at all. A token that has run out with nothing to renew
-    # it from is by far the likeliest reason and the only one the caller can act
-    # on, so say so rather than repeating whichever refusal the provider
-    # happened to word first.
+    # Nothing came back at all, and which of two reasons that is settles what to
+    # tell the patient. A grant covering none of what was asked is the one
+    # narrowing consenting again would actually fix; anything else is a token
+    # that has run out with nothing to renew it from, by far the likeliest and
+    # the only other one the caller can act on. Either beats repeating whichever
+    # refusal the provider happened to word first.
+    readable, _ = scopes.partition(resource_types, live.scope)
+    if not readable:
+        return _ConnectionRead.refused(token, UNGRANTED, resources)
+
     expired = live.expires_at is not None and live.expires_at <= utcnow()
     return _ConnectionRead.refused(token, EXPIRED if expired else UNREADABLE, resources)
 
@@ -503,9 +485,11 @@ async def _revoke_at_provider(connection: ProviderToken) -> bool:
     that ends it must not be the request that fails on reading it.
     """
     try:
+        # Presence off the column, value off the property: asking the property
+        # twice would decrypt twice, the first only to compare against None.
         token, hint = (
             (connection.refresh_token, "refresh_token")
-            if connection.refresh_token is not None
+            if connection.encrypted_refresh_token is not None
             else (connection.access_token, "access_token")
         )
         adapter = registry.for_connection(connection.provider, connection.iss)
@@ -570,16 +554,8 @@ async def get_all_resource(
         # route reads one connection rather than a record, so there is nothing to
         # keep intact beside it — but it still answers rather than raising, since
         # the frontend that has not moved off this route yet would otherwise see a
-        # bare 500 for a problem the newer routes describe.
-        logger.error(
-            "Stored token for %s could not be decrypted with any configured key",
-            token_row.provider,
-            **fields(
-                event="connection.token.undecryptable",
-                provider=token_row.provider,
-                patient_id=token_row.patient_id,
-            ),
-        )
+        # bare 500 for a problem the newer routes describe in a sentence.
+        _log_undecryptable(token_row)
         return JSONResponse({"error": UNDECRYPTABLE.error}, status_code=502)
 
     resources = await service.fetch_fhir_resources(
@@ -587,6 +563,7 @@ async def get_all_resource(
         token_row.iss,
         app_session.patient_fhir_id,
         config.resources_for(include),
+        live.scope,
     )
 
     return JSONResponse(

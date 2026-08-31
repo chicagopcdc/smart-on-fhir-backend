@@ -148,7 +148,7 @@ async def test_a_refused_discovery_is_told_from_one_that_never_answered(logged, 
 # --- the exchange -------------------------------------------------------------
 
 
-async def _reach_callback(http, tmp_path_name, token_route):
+async def _reach_callback(http, token_route):
     """Start an authorization, then answer its token endpoint with ``token_route``."""
     respx.get(WELL_KNOWN).mock(
         return_value=httpx.Response(200, json=load_fixture(LAUNCHER["smart_config"]))
@@ -172,13 +172,12 @@ async def _reach_callback(http, tmp_path_name, token_route):
 
 
 @pytest.mark.parametrize(
-    ("name", "answer", "expected_status", "detail", "reason", "status"),
+    ("name", "answer", "expected_status", "reason", "status"),
     [
         (
             "the grant is gone",
             httpx.Response(400, json={"error": "invalid_grant"}),
             400,
-            EXCHANGE_FAILED,
             "invalid_grant",
             400,
         ),
@@ -186,7 +185,6 @@ async def _reach_callback(http, tmp_path_name, token_route):
             "the client is not registered",
             httpx.Response(401, json={"error": "invalid_client"}),
             400,
-            EXCHANGE_FAILED,
             "invalid_client",
             401,
         ),
@@ -194,7 +192,6 @@ async def _reach_callback(http, tmp_path_name, token_route):
             "the server refuses without saying why",
             httpx.Response(500, text="upstream is unwell"),
             400,
-            EXCHANGE_FAILED,
             "rejected",
             500,
         ),
@@ -202,7 +199,6 @@ async def _reach_callback(http, tmp_path_name, token_route):
             "the server never answers",
             httpx.ReadTimeout("timed out"),
             502,
-            EXCHANGE_FAILED,
             "unreachable",
             None,
         ),
@@ -210,14 +206,16 @@ async def _reach_callback(http, tmp_path_name, token_route):
 )
 @respx.mock
 async def test_an_exchange_failure_is_named_in_the_log(
-    name, answer, expected_status, detail, reason, status, logged, tmp_path
+    name, answer, expected_status, reason, status, logged, tmp_path
 ):
     async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'exchange.db'}"):
         async with client() as http:
-            response = await _reach_callback(http, tmp_path, answer)
+            response = await _reach_callback(http, answer)
 
+    # One sentence for every one of them, under two different statuses. That is
+    # the flattening this exists to make survivable, not to undo.
     assert response.status_code == expected_status, name
-    assert response.json() == {"detail": detail}, name
+    assert response.json() == {"detail": EXCHANGE_FAILED}, name
 
     entry = _fields(logged, "auth.token_exchange.failed")
     assert entry["reason"] == reason, name
@@ -233,15 +231,12 @@ async def test_a_refusal_and_an_outage_share_a_sentence_and_not_a_log_line(
     async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'both.db'}"):
         async with client() as http:
             refused = await _reach_callback(
-                http, tmp_path, httpx.Response(400, json={"error": "invalid_grant"})
+                http, httpx.Response(400, json={"error": "invalid_grant"})
             )
             refused_entry = _fields(logged, "auth.token_exchange.failed")
 
             logged.clear()
-            respx.post(LAUNCHER["token_url"]).mock(side_effect=httpx.ConnectError("down"))
-            unreachable = await _reach_callback(
-                http, tmp_path, httpx.ConnectError("down")
-            )
+            unreachable = await _reach_callback(http, httpx.ConnectError("down"))
             unreachable_entry = _fields(logged, "auth.token_exchange.failed")
 
     assert refused.json() == unreachable.json() == {"detail": EXCHANGE_FAILED}

@@ -128,11 +128,7 @@ async def live_token(connection: ProviderToken) -> LiveToken:
     stored = LiveToken.of(connection)
     leeway = get_settings().token_refresh_leeway_seconds
 
-    # Whether there is a refresh token is a question about the row, so it is asked
-    # of the column. Reading the property would decrypt one only to compare it
-    # against None, and would fail a connection whose access token is perfectly
-    # usable because the refresh token beside it happens to predate a key rotation.
-    if not _is_due(connection.expires_at, leeway) or connection.encrypted_refresh_token is None:
+    if not _refresh_due(connection, leeway):
         return stored
 
     async with _lock_for(connection.id):
@@ -159,7 +155,7 @@ async def _refresh(connection_id: int, leeway: int) -> LiveToken:
         if connection is None:
             raise RefreshUnavailable("the connection no longer exists")
         # Whoever held the lock before us may already have done this.
-        if not _is_due(connection.expires_at, leeway) or connection.encrypted_refresh_token is None:
+        if not _refresh_due(connection, leeway):
             return LiveToken.of(connection)
 
         spent = connection.refresh_token
@@ -196,6 +192,20 @@ async def _refresh(connection_id: int, leeway: int) -> LiveToken:
         raise ReauthorizationRequired(provider)
 
     return await _store(connection_id, spent, token_set)
+
+
+def _refresh_due(connection: ProviderToken, leeway: int) -> bool:
+    """Whether this connection needs renewing and has the means to be renewed.
+
+    Presence is asked of the column, not the property: reading the property would
+    decrypt a refresh token only to compare it against None, and would fail a
+    connection whose access token is perfectly usable because the refresh token
+    beside it happens to predate a key rotation.
+    """
+    return (
+        _is_due(connection.expires_at, leeway)
+        and connection.encrypted_refresh_token is not None
+    )
 
 
 def _replaced_since(connection: ProviderToken, spent: str) -> bool:
@@ -265,7 +275,7 @@ async def _forget_refresh_token(connection_id: int, spent: str) -> LiveToken | N
             return None
         if _replaced_since(connection, spent):
             return LiveToken.of(connection)
-        if connection.refresh_token is not None:
+        if connection.encrypted_refresh_token is not None:
             connection.refresh_token = None
             await session.commit()
         return None

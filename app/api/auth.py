@@ -42,12 +42,8 @@ from app.core.db import (
     persist_token,
 )
 from app.core.logging import fields
-from app.providers import config, scopes
-from app.providers.discovery import (
-    DiscoveryNotFoundError,
-    DiscoveryParseError,
-    SMARTDiscoveryError,
-)
+from app.providers import config, discovery, scopes
+from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError, TokenExchangeError
 from app.providers.registry import provider_for
 
@@ -55,33 +51,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["authorization"])
 
-# What went wrong upstream, in the vocabulary `GET /providers/endpoint-check`
-# already answers with, so a log line and a pre-flight check describe the same
-# server the same way. DiscoveryUnreachableError covers two situations that read
-# alike here and not at all alike to whoever has to act on them — a server that
-# refused, and one that never answered — which is what the status beside the
-# reason is for.
-_DISCOVERY_REASONS = {
-    DiscoveryNotFoundError: "no_smart_configuration",
-    DiscoveryParseError: "invalid_smart_configuration",
-}
-_UNREACHABLE = "unreachable"
-
 
 def _upstream_reason(exc: Exception) -> tuple[str, int | None]:
-    """What this failure was, and what the server answered if it answered at all."""
+    """What this failure was, and what the server answered if it answered at all.
+
+    A discovery failure is named by ``discovery.failure_status``, the same
+    function `GET /providers/endpoint-check` answers callers with, so a log line
+    and a pre-flight check describe the same server the same way. It also folds
+    two situations into ``unreachable`` that read alike here and not at all alike
+    to whoever has to act on them — a server that refused, and one that never
+    answered — which is what the status beside the reason is for.
+    """
     if isinstance(exc, SMARTDiscoveryError):
-        for kind, reason in _DISCOVERY_REASONS.items():
-            if isinstance(exc, kind):
-                return reason, exc.status_code
-        return _UNREACHABLE, exc.status_code
+        return discovery.failure_status(exc), exc.status_code
     if isinstance(exc, TokenExchangeError):
         # RFC 6749 §5.2 spends a distinct code on each way an exchange can be
         # refused; a server that sent none has still refused it.
         return exc.oauth_error or "rejected", exc.status_code
     if isinstance(exc, SMARTProviderError):
         return "unsupported_client_authentication", None
-    return _UNREACHABLE, None
+    return "unreachable", None
 
 
 def _log_upstream_failure(exc: Exception, *, stage: str, provider: str, iss: str) -> None:
@@ -129,11 +118,7 @@ def _log_scope_narrowing(provider: str, granted: str | None) -> None:
     nothing an operator can act on.
     """
     withheld = scopes.unreadable(
-        {
-            config.fhir_type_for(entry)
-            for entry in config.resources_for(config.ResourceTier.US_CORE).values()
-        },
-        granted,
+        config.fhir_types_for(config.ResourceTier.US_CORE), granted
     )
     if not withheld:
         return

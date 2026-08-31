@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from cryptography.fernet import Fernet
@@ -36,6 +37,7 @@ from app.providers.models import (  # noqa: E402
     SMARTConfiguration,
     TokenSet,
 )
+from app.core.config import get_settings  # noqa: E402
 from tests.app_harness import load_fixture, save_fixture  # noqa: E402
 
 
@@ -80,6 +82,70 @@ def recapture(request):
     if not request.config.getoption("--refresh-fixtures"):
         return lambda name, payload: None
     return save_fixture
+
+
+@pytest.fixture
+def log_capture():
+    """The application's own handler and configuration, writing to a buffer.
+
+    A factory, because the two things a test varies are the level it listens at
+    and nothing else. ``build_handler`` and ``configure_logging`` are the shipped
+    ones rather than stand-ins: a leak the real redaction misses has to show up
+    in a test using this, which it would not if the test brought its own
+    formatter.
+
+    Everything ``configure_logging`` touches is put back afterwards — six logger
+    levels and the handlers and propagation of uvicorn's three. It mutates those
+    process-wide, so a fixture that restored only the root level would leave the
+    rest set for whatever ran next.
+    """
+    import io
+
+    from app.core.logging import build_handler, configure_logging
+
+    touched = ("", "app", "httpx", "sqlalchemy.engine", "aiosqlite", "asyncpg")
+    served = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    before = {name: logging.getLogger(name).level for name in touched}
+    uvicorn_before = {
+        name: (list(logging.getLogger(name).handlers), logging.getLogger(name).propagate)
+        for name in served
+    }
+
+    root = logging.getLogger()
+    installed = []
+
+    def listen(level=logging.INFO) -> io.StringIO:
+        buffer = io.StringIO()
+        handler = build_handler()
+        handler.setStream(buffer)
+        root.addHandler(handler)
+        installed.append(handler)
+        configure_logging()
+        root.setLevel(level)
+        return buffer
+
+    try:
+        yield listen
+    finally:
+        for handler in installed:
+            root.removeHandler(handler)
+        for name, level in before.items():
+            logging.getLogger(name).setLevel(level)
+        for name, (handlers, propagate) in uvicorn_before.items():
+            logger = logging.getLogger(name)
+            logger.handlers[:] = handlers
+            logger.propagate = propagate
+
+
+@pytest.fixture
+def json_log_capture(monkeypatch, log_capture):
+    """The same, in the JSON mode a deployment shipping logs would run."""
+    monkeypatch.setenv("LOG_FORMAT", "json")
+    get_settings.cache_clear()
+    try:
+        yield log_capture
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -59,11 +59,20 @@ def _requests_made(route) -> set[tuple[str, str | None]]:
 
 
 async def _read_resources(tmp_path, token_response, params=None):
-    """Authorize against the launcher, then read resources with the mocked FHIR server."""
+    """Authorize against the launcher, then read resources with the mocked FHIR server.
+
+    The grant is widened to the wildcard these tests need. Which types a tier
+    selects and which a grant permits are two different questions, and a read
+    asks for the intersection — so against ``epic_token_response``'s real
+    capture, which grants ``patient/Patient.read`` and nothing else, every tier
+    would come back as a single request and these tests could say nothing about
+    tiers at all. What a narrow grant does is covered in
+    ``test_downstream_api_flow.py``.
+    """
     return await read_resources(
         SMART_LAUNCHER,
         f"sqlite+aiosqlite:///{tmp_path / 'tiers.db'}",
-        token_response=token_response,
+        token_response={**token_response, "scope": "launch/patient patient/*.read"},
         responder=lambda request: httpx.Response(200, json=EMPTY_BUNDLE),
         params=params,
     )

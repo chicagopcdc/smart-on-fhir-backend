@@ -28,16 +28,16 @@ from app.providers.config import fhir_type_for
 # and simply do not match.
 _SCOPE = re.compile(r"\A(?:patient|user)/(?P<type>[A-Za-z]+|\*)\.(?P<access>[A-Za-z*]+)\Z")
 
-# v1 spells the whole verb out. "write" is why the v2 letters cannot simply be
-# searched for a literal "r": it contains one.
-_V1_READS = {"read", "*"}
-_V1_ACCESS = {"read", "write", "*"}
+# v1 spells the whole verb out, and says of each whether it reads. Consulted
+# before the v2 letters, and a lookup rather than a search, because "write"
+# contains an "r" and would otherwise read as permitting reads.
+_V1_ACCESS = {"read": True, "write": False, "*": True}
 
 
 def _reads(access: str) -> bool:
     """Whether this access string allows reading, in either scope grammar."""
     if access in _V1_ACCESS:
-        return access in _V1_READS
+        return _V1_ACCESS[access]
     return "r" in access or "s" in access
 
 

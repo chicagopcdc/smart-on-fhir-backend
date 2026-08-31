@@ -30,8 +30,10 @@ import re
 import uuid
 
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.api.schemas import ErrorResponse
 from app.core.logging import fields, request_id
 
 logger = logging.getLogger(__name__)
@@ -47,13 +49,8 @@ _ACCEPTABLE_ID = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
 
 def _request_id(scope: Scope) -> str:
     """The id to serve this request under: the caller's if it is usable, else ours."""
-    for name, value in scope.get("headers", []):
-        if name.decode("latin-1").lower() == REQUEST_ID_HEADER:
-            candidate = value.decode("latin-1")
-            if _ACCEPTABLE_ID.match(candidate):
-                return candidate
-            break
-    return uuid.uuid4().hex
+    candidate = Headers(scope=scope).get(REQUEST_ID_HEADER, "")
+    return candidate if _ACCEPTABLE_ID.match(candidate) else uuid.uuid4().hex
 
 
 class RequestContext:
@@ -108,8 +105,11 @@ class RequestContext:
                 # left to replace it with. Let it unwind and be logged as a broken
                 # stream rather than pretending it was answered.
                 raise
+            # Built from the model the API declares its refusals with, so this
+            # response — the one no route lists in its ``responses`` — cannot be
+            # the one that drifts from the shape every other refusal keeps.
             await JSONResponse(
-                {"detail": "Internal server error"},
+                ErrorResponse(detail="Internal server error").model_dump(),
                 status_code=500,
                 headers={REQUEST_ID_HEADER: current},
             )(scope, receive, send)

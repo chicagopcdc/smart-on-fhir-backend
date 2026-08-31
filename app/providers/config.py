@@ -373,6 +373,16 @@ def resources_for(tier: ResourceTier) -> dict:
     )
 
 
+def fhir_types_for(tier: ResourceTier) -> frozenset[str]:
+    """The FHIR types a tier reads, as against the fetch config rows naming them.
+
+    Not one per row: the Observation searches are one type split by category on
+    our side, so a set of rows over-counts what a server is actually asked for.
+    Derived here rather than at each caller, beside the table it is derived from.
+    """
+    return frozenset(fhir_type_for(entry) for entry in resources_for(tier).values())
+
+
 def resources_named(names) -> dict:
     """The fetch config rows for an explicitly named set of resources."""
     return _select(names)

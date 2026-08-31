@@ -158,11 +158,11 @@ def _payload(record: logging.LogRecord) -> dict:
             timespec="milliseconds"
         ),
         "level": record.levelname,
-        "logger": record.name,
+        "logger": _clean(record.name),
         "message": _clean(record.getMessage()),
     }
 
-    current = getattr(record, "request_id", None) or request_id.get()
+    current = request_id.get()
     if current:
         payload["request_id"] = current
 
@@ -173,9 +173,16 @@ def _payload(record: logging.LogRecord) -> dict:
         exc_type, _, tb = record.exc_info
         payload["exception"] = getattr(exc_type, "__name__", str(exc_type))
         # The frames, and deliberately not the message: see the module docstring.
+        #
+        # Walked rather than extracted. ``traceback.extract_tb`` stats and reads
+        # every source file the traceback names, to attach each line's text to
+        # the frame — text nothing here asks for. That is tens of microseconds
+        # and a syscall per file, spent on the one path least able to afford it:
+        # the catch-all, which a stopped database puts every request through at
+        # once.
         payload["traceback"] = [
-            f"{frame.filename}:{frame.lineno} in {frame.name}"
-            for frame in traceback.extract_tb(tb)
+            _clean(f"{frame.f_code.co_filename}:{lineno} in {frame.f_code.co_name}")
+            for frame, lineno in traceback.walk_tb(tb)
         ]
     return payload
 
@@ -197,24 +204,24 @@ class TextFormatter(logging.Formatter):
     to reading still reads the same way.
     """
 
-    _PREFIX = ("time", "level", "logger", "message")
-
     def format(self, record: logging.LogRecord) -> str:
         payload = _payload(record)
-        line = (
-            f"{payload['time']} {payload['level']} "
-            f"[{payload['logger']}] {payload['message']}"
-        )
-        extra = " ".join(
-            f"{key}={value}"
-            for key, value in payload.items()
-            if key not in self._PREFIX and key != "traceback"
-        )
-        if extra:
-            line = f"{line} {extra}"
-        if "traceback" in payload:
-            line = "\n".join([line, *(f"    {f}" for f in payload["traceback"])])
-        return redact(line)
+        # Taken out of the payload rather than skipped by name, so that whatever
+        # is left is by definition the structured keys. A second list of the ones
+        # already rendered would be a thing to keep in step, and a key added to
+        # ``_payload`` would start appearing twice the day someone forgot.
+        when = payload.pop("time")
+        level = payload.pop("level")
+        name = payload.pop("logger")
+        message = payload.pop("message")
+        frames = payload.pop("traceback", None)
+
+        line = f"{when} {level} [{name}] {message}"
+        if payload:
+            line += " " + " ".join(f"{key}={value}" for key, value in payload.items())
+        if frames:
+            line = "\n".join([line, *(f"    {frame}" for frame in frames)])
+        return line
 
 
 def build_handler(settings: Settings | None = None) -> logging.Handler:

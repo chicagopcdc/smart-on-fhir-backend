@@ -23,14 +23,13 @@ and requires the same assertions to fail.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 
 import pytest
 import respx
 
-from app.core.logging import REDACTED, build_handler, configure_logging, redact
+from app.core.logging import REDACTED, fields, redact
 from tests.app_harness import (
     SMART_LAUNCHER as LAUNCHER,
     app_db,
@@ -55,39 +54,15 @@ ACCESS_TOKEN = f"access-for-{FHIR_PATIENT_ID}"
 
 
 @pytest.fixture
-def written():
-    """The application's own handler and its own configuration, over a buffer.
+def written(log_capture):
+    """Everything written while a flow runs, listened for harder than in production.
 
-    ``build_handler`` and ``configure_logging`` are the shipped things, not
-    stand-ins: a leak the real redaction misses has to show up here, which it
-    would not if this attached a formatter of its own. ``configure_logging``
-    matters as much as the handler, because part of the guarantee is which
-    loggers it declines to let speak.
-
-    The root floor is then dropped to DEBUG, which is louder than any deployment
-    and deliberately so. It is what makes httpx write a line per FHIR request,
-    URLs and their ``?patient=`` and all — the records the shipped levels are
-    arranged to suppress, and therefore the ones a test at those levels would
-    never see leak.
+    DEBUG on the root is louder than any deployment, and deliberately so: it is
+    what makes httpx write a line per FHIR request, URLs and their ``?patient=``
+    and all. Those are the records the shipped levels are arranged to suppress,
+    and therefore the ones a test at those levels would never see leak.
     """
-    buffer = io.StringIO()
-    handler = build_handler()
-    handler.setStream(buffer)
-
-    root = logging.getLogger()
-    previous = {
-        name: logging.getLogger(name).level
-        for name in ("", "app", "httpx", "sqlalchemy.engine", "aiosqlite", "asyncpg")
-    }
-    root.addHandler(handler)
-    configure_logging()
-    root.setLevel(logging.DEBUG)
-    try:
-        yield buffer
-    finally:
-        root.removeHandler(handler)
-        for name, level in previous.items():
-            logging.getLogger(name).setLevel(level)
+    return log_capture(logging.DEBUG)
 
 
 @pytest.fixture
@@ -103,18 +78,15 @@ def served_by_uvicorn(written):
 
     import uvicorn.config
 
+    from app.core.logging import configure_logging
+
     logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)
     configure_logging()
-    try:
-        yield written
-    finally:
-        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-            spoken_for = logging.getLogger(name)
-            spoken_for.handlers.clear()
-            spoken_for.propagate = True
+    # log_capture puts uvicorn's loggers back as they were, so this need not.
+    return written
 
 
-def _forbidden(logged: str, *, session_id: str, patient_id: str) -> None:
+def _forbidden(logged: str, *, session_id: str) -> None:
     """Everything this flow handled that a log line must not carry."""
     assert ACCESS_TOKEN not in logged, "an access token reached the log"
     assert f"refresh-for-{FHIR_PATIENT_ID}" not in logged, "a refresh token reached the log"
@@ -123,10 +95,6 @@ def _forbidden(logged: str, *, session_id: str, patient_id: str) -> None:
     assert FAMILY_NAME not in logged, "the patient's name reached the log"
     assert GIVEN_NAME not in logged, "the patient's name reached the log"
     assert BIRTH_DATE not in logged, "the patient's date of birth reached the log"
-
-    # Ours, and the one identifier that is supposed to be there: without it a
-    # line naming a failure could not be tied to the record it happened on.
-    assert patient_id.startswith("pat_")
 
 
 @respx.mock
@@ -154,7 +122,7 @@ async def test_a_whole_record_goes_through_without_reaching_the_log(written, tmp
 
     logged = written.getvalue()
     assert logged.strip(), "nothing was logged, so this asserts nothing"
-    _forbidden(logged, session_id=session_id, patient_id=patient_id)
+    _forbidden(logged, session_id=session_id)
 
 
 @respx.mock
@@ -176,11 +144,7 @@ async def test_the_search_would_catch_a_leak(written, tmp_path):
         stray.debug("a library wrote %s straight into a message", secret)
 
     with pytest.raises(AssertionError):
-        _forbidden(
-            written.getvalue(),
-            session_id=connected["sessionId"],
-            patient_id=connected["patientId"],
-        )
+        _forbidden(written.getvalue(), session_id=connected["sessionId"])
 
 
 @respx.mock
@@ -216,11 +180,7 @@ async def test_a_failed_read_names_the_provider_and_our_own_record_id(
     logged = written.getvalue()
     assert LAUNCHER["provider"] in logged, "the log does not say which connection failed"
     assert connected["patientId"] in logged, "the log does not say which record it was on"
-    _forbidden(
-        logged,
-        session_id=connected["sessionId"],
-        patient_id=connected["patientId"],
-    )
+    _forbidden(logged, session_id=connected["sessionId"])
 
 
 # --- the redactor itself, over the shapes a credential actually takes ----------
@@ -261,8 +221,6 @@ def test_a_url_keeps_the_part_worth_reading():
 
 def test_a_structured_field_is_masked_by_its_name(written):
     """A key whose name says it is sensitive is masked whatever its value looks like."""
-    from app.core.logging import fields
-
     logging.getLogger("app.test").error(
         "storing", **fields(provider="EPIC_SANDBOX", refresh_token="plain-looking-value")
     )
@@ -273,30 +231,16 @@ def test_a_structured_field_is_masked_by_its_name(written):
     assert REDACTED in logged
 
 
-def test_json_format_writes_one_object_per_line(monkeypatch):
+def test_json_format_writes_one_object_per_line(json_log_capture):
     """The shipped JSON output has to parse, redaction and all."""
-    from app.core.config import get_settings
-    from app.core.logging import fields
+    written = json_log_capture()
 
-    monkeypatch.setenv("LOG_FORMAT", "json")
-    get_settings.cache_clear()
-    try:
-        buffer = io.StringIO()
-        handler = build_handler()
-        handler.setStream(buffer)
-        logger = logging.getLogger("app.test.json")
-        logger.addHandler(handler)
-        try:
-            logger.error(
-                "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
-                **fields(event="probe", provider="EPIC_SANDBOX"),
-            )
-        finally:
-            logger.removeHandler(handler)
-    finally:
-        get_settings.cache_clear()
+    logging.getLogger("app.test.json").error(
+        "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+        **fields(event="probe", provider="EPIC_SANDBOX"),
+    )
 
-    [line] = [line for line in buffer.getvalue().splitlines() if line.strip()]
+    [line] = [line for line in written.getvalue().splitlines() if line.strip()]
     record = json.loads(line)
     assert record["event"] == "probe"
     assert record["provider"] == "EPIC_SANDBOX"
@@ -318,8 +262,6 @@ def test_a_value_carrying_a_newline_cannot_forge_a_record(written):
     application wrote. The middleware already validates an inbound request id for
     exactly this reason; every other value needs the same treatment.
     """
-    from app.core.logging import fields
-
     forged = "invalid_grant\n2026-01-01T00:00:00.000+00:00 ERROR [app.core.db] rows dropped"
     logging.getLogger("app.test.injection").warning(
         "upstream refused", **fields(event="auth.token_exchange.failed", reason=forged)
@@ -332,30 +274,16 @@ def test_a_value_carrying_a_newline_cannot_forge_a_record(written):
     assert "rows dropped" in written_lines[0]
 
 
-def test_the_json_stream_survives_a_value_that_would_break_it(monkeypatch):
+def test_the_json_stream_survives_a_value_that_would_break_it(json_log_capture):
     """Every line has to parse, including the one an upstream server wrote into."""
-    from app.core.config import get_settings
-    from app.core.logging import fields
+    written = json_log_capture()
 
-    monkeypatch.setenv("LOG_FORMAT", "json")
-    get_settings.cache_clear()
-    try:
-        buffer = io.StringIO()
-        handler = build_handler()
-        handler.setStream(buffer)
-        logger = logging.getLogger("app.test.jsoninjection")
-        logger.addHandler(handler)
-        try:
-            logger.error(
-                "upstream refused",
-                **fields(reason='not_json"}\n{"level": "INFO", "message": "all clear'),
-            )
-        finally:
-            logger.removeHandler(handler)
-    finally:
-        get_settings.cache_clear()
+    logging.getLogger("app.test.jsoninjection").error(
+        "upstream refused",
+        **fields(reason='not_json"}\n{"level": "INFO", "message": "all clear'),
+    )
 
-    lines = [line for line in buffer.getvalue().splitlines() if line.strip()]
+    lines = [line for line in written.getvalue().splitlines() if line.strip()]
     assert len(lines) == 1
     assert json.loads(lines[0])["message"] == "upstream refused"
 

@@ -53,6 +53,26 @@ class DiscoveryParseError(SMARTDiscoveryError):
     """The document was fetched but is not a valid SMART configuration."""
 
 
+def failure_status(exc: SMARTDiscoveryError) -> str:
+    """Which failure this is, in the vocabulary the API answers checks in.
+
+    Lives beside the exceptions rather than at either caller, because there are
+    two — the endpoint check answers it to a caller, and an authorization writes
+    it to the log — and a fifth failure added here has to reach both. Restated at
+    one of them, a new case would quietly read as ``unreachable`` on that side
+    only, while the other reported it correctly.
+
+    The strings are ``EndpointCheckStatus`` in ``app/api/schemas.py``; naming that
+    type here would point this module at the API layer, which it otherwise knows
+    nothing about.
+    """
+    if isinstance(exc, DiscoveryNotFoundError):
+        return "no_smart_configuration"
+    if isinstance(exc, DiscoveryParseError):
+        return "invalid_smart_configuration"
+    return "unreachable"
+
+
 @dataclass(frozen=True)
 class DiscoveryResult:
     """A configuration and when it was read off the network, so a caller reporting
