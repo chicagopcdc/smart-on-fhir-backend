@@ -579,6 +579,15 @@ response as `X-Request-ID`, so a caller reporting a failure can quote the id and
 have it found. A request that arrives with one of its own keeps it, provided it
 is short and alphanumeric.
 
+**The one to watch after connecting a new server** is `auth.scope.narrowed`. It
+says the server granted less than was asked for, and names the resource types it
+withheld. A read of that connection will not request those types at all — asking
+for a type a grant excludes buys a refusal and nothing else — so they come back
+as `"was not granted access"` with a null `statusCode`, and the connection reads
+`degraded`. That is the intended behaviour for a genuine narrowing, and it is
+also what you would see if a server understated what it granted, so a provider
+returning less data than expected is worth checking against this line first.
+
 **What is never written.** A log line names what happened and where, never whose
 it was. Access and refresh tokens, `Authorization` values, session ids, an OAuth
 `state` or `code`, provider-issued patient ids, and resource content do not appear

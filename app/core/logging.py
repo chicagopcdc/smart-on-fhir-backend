@@ -29,6 +29,11 @@ parameter names could be trusted to stay complete), and the shapes credentials
 actually take — a bearer prefix, a JWT's three segments, Fernet's ``gAAAAA`` —
 are masked wherever they appear.
 
+What it cannot do is recognise a secret that was rendered into a message and
+looks like nothing in particular — an opaque token, spelled out. Structure is
+what the key rule needs, and a sentence has none. That case belongs to the first
+rule, which is why the first rule is the one that matters.
+
 That happens in the **formatter** rather than in a filter. A filter added to the
 root logger never runs for a record a child logger propagated up, which is every
 record this application writes; a formatter runs on everything the handler
@@ -48,6 +53,7 @@ import json
 import logging
 import re
 import traceback
+from collections.abc import Mapping
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
@@ -143,9 +149,22 @@ def _clean(value):
 
     Numbers and booleans are left as they are. They cannot carry a secret, and
     coercing them to text would cost a JSON consumer the types it reads.
+
+    A mapping is walked rather than rendered, so that the key rule reaches a
+    nested ``access_token`` as surely as a top-level one. Rendered first, it
+    would be one string, and a token that happens to look like nothing in
+    particular — an opaque one, as Epic issues — would have no shape left to
+    match on.
     """
     if value is None or isinstance(value, (bool, int, float)):
         return value
+    if isinstance(value, Mapping):
+        return {
+            key: REDACTED if _is_unsafe(str(key)) else _clean(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_clean(item) for item in value]
     text = redact(value if isinstance(value, str) else str(value))
     # One value is one value, whatever it arrived containing.
     return _CONTROL.sub(" ", text)

@@ -134,8 +134,14 @@ async def fetch_fhir_resources(
     # than the provider's — and every row the caller asked for is in it, in the
     # order they asked, whether it was read or withheld. A caller should not have
     # to know which happened to find out what a type came back as.
+    #
+    # Keyed off what the grant withheld rather than off what is missing from the
+    # results. The two coincide today, but "absent" is not a synonym for "not
+    # granted": a row dropped for any other reason would otherwise be reported as
+    # a consent problem, and a connection whose every row went that way would ask
+    # the patient to authorize again over a fault on this side.
     return {
-        name: read[name] if name in read else withheld_by_scope(entry)
+        name: withheld_by_scope(entry) if name in withheld else read[name]
         for name, entry in resource_types.items()
     }
 

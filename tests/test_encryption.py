@@ -57,7 +57,7 @@ async def test_encrypted_column_stores_ciphertext(db_session):
     db_session.add(token)
     await db_session.commit()
 
-    # Read the raw column with textual SQL, bypassing the EncryptedString type:
+    # Read the raw column with textual SQL, bypassing the decrypting property:
     # what physically sits in the database must be ciphertext, not the token.
     raw = (
         await db_session.execute(

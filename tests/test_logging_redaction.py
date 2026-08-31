@@ -231,6 +231,28 @@ def test_a_structured_field_is_masked_by_its_name(written):
     assert REDACTED in logged
 
 
+def test_a_sensitive_key_is_masked_however_deep_it_sits(written):
+    """The key rule has to reach a nested value, or it only covers what it can see.
+
+    A token that looks like nothing in particular — an opaque one, which is what
+    Epic issues — has no shape for the patterns to match, so the key its value
+    sits under is the only thing left to recognise it by. Rendering the structure
+    to a string first would throw that away.
+    """
+    logging.getLogger("app.test.nested").error(
+        "storing what came back",
+        **fields(
+            provider="EPIC_SANDBOX",
+            response={"access_token": "opaque-and-unremarkable", "patient": "erXu"},
+        ),
+    )
+
+    logged = written.getvalue()
+    assert "EPIC_SANDBOX" in logged
+    assert "opaque-and-unremarkable" not in logged, "a nested token reached the log"
+    assert REDACTED in logged
+
+
 def test_json_format_writes_one_object_per_line(json_log_capture):
     """The shipped JSON output has to parse, redaction and all."""
     written = json_log_capture()
