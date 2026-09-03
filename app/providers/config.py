@@ -1,9 +1,13 @@
+"""Which servers this backend is registered with, and what it reads from them.
+
+Two tables live here. The provider registry is the registration data a SMART
+server does not advertise; ``RESOURCE_FETCH_CONFIG`` and the tiers under it are
+how a connected patient's record is read.
+"""
+
 from enum import Enum
 
-from app.core.config import get_settings
-
-_settings = get_settings()
-_redirect_uri = _settings.frontend_hostname.rstrip("/") + "/auth/callback"
+from app.core.config import Settings, get_settings
 
 _DEFAULT_SCOPES = "launch/patient patient/*.read openid profile offline_access"
 
@@ -30,78 +34,97 @@ _CERNER_SCOPES = " ".join(
     ]
 )
 
-# Per-provider registration data that a SMART server does NOT advertise:
-# the client credentials, where the EHR redirects back to, and the scopes we
-# request. Endpoints and capabilities are discovered at runtime instead.
-#
-# "allowed_issuers" pins which FHIR base URLs a caller may start an
-# authorization against. A confidential client must never send its secret to an
-# issuer it did not register with, so the supplied iss is checked against this
-# allowlist before any discovery request is made.
-EHR_CONFIGS = {
-    "EPIC": {
-        "client_id": _settings.epic_client_id,
-        "client_secret": _settings.epic_client_secret,
-        "redirect_uri": _redirect_uri,
-        "scopes": _DEFAULT_SCOPES,
-        "allowed_issuers": [_settings.epic_issuer] if _settings.epic_issuer else [],
-    },
-    "EPIC_SANDBOX": {
-        "client_id": _settings.epic_sandbox_client_id,
-        "client_secret": _settings.epic_sandbox_client_secret,
-        "redirect_uri": _redirect_uri,
-        "scopes": _DEFAULT_SCOPES,
-        "allowed_issuers": [
-            "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
-        ],
-    },
-    # Public SMART App Launcher. A public client (no secret) that relies on PKCE;
-    # the launcher does not validate the client_id, so a default keeps the flow
-    # runnable without any registration.
-    "SMART_LAUNCHER": {
-        "client_id": _settings.smart_launcher_client_id or "smart-fhir-backend",
-        "client_secret": None,
-        "redirect_uri": _redirect_uri,
-        "scopes": _DEFAULT_SCOPES,
-        # The launcher carries a standalone launch's context in the aud path
-        # (.../v/r4/sim/<base64 options>/fhir) and refuses one made against the
-        # plain FHIR base with "Invalid launch options". So the issuer offered
-        # here — which is what /providers advertises and a caller connects with —
-        # is the sim form, with an empty options object (base64 "{}"). Empty is
-        # enough: it satisfies the launcher's parse and leaves it to prompt for
-        # the patient, which is what a standalone launch is supposed to do.
-        "allowed_issuers": [
-            "https://launch.smarthealthit.org/v/r4/sim/e30/fhir",
-        ],
-        # Accept any FHIR base under the launcher's r4 tree, so a caller that
-        # builds its own sim options, or uses the plain base for an EHR launch,
-        # still authorizes. Safe as a prefix only here: this is a public client
-        # (no secret is ever sent), the prefix is same-host, and it ends in
-        # "/v/r4/" so a suffix look-alike host such as
-        # "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
-        # keep exact-match allowlisting (no prefixes) for tenant isolation.
-        "allowed_issuer_prefixes": [
-            "https://launch.smarthealthit.org/v/r4/",
-        ],
-    },
-    # Cerner / Oracle Health sandbox, registered as a public client. Discovery
-    # advertises S256, so the same adapter turns on PKCE automatically.
-    # Cerner serves one tenant's data at a different host per persona, and the host
-    # decides who may sign in: fhir-myrecord is where a patient authenticates to
-    # reach their own record, fhir-ehr-code where a clinician reaches the patients
-    # they are authorized for. Each publishes its own discovery document naming a
-    # different authorize endpoint, so the issuer is what selects the persona. This
-    # is the patient one, matching an application registered as patient-facing.
-    "CERNER_SANDBOX": {
-        "client_id": _settings.cerner_client_id,
-        "client_secret": _settings.cerner_client_secret,
-        "redirect_uri": _redirect_uri,
-        "scopes": _CERNER_SCOPES,
-        "allowed_issuers": [
-            "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
-        ],
-    },
-}
+
+def build_ehr_configs(settings: Settings) -> dict[str, dict]:
+    """The provider registry these settings describe.
+
+    Per-provider registration data that a SMART server does NOT advertise: the
+    client credentials, where the EHR redirects back to, and the scopes we
+    request. Endpoints and capabilities are discovered at runtime instead.
+
+    ``allowed_issuers`` pins which FHIR base URLs a caller may start an
+    authorization against. A confidential client must never send its secret to an
+    issuer it did not register with, so the supplied iss is checked against this
+    allowlist before any discovery request is made.
+
+    Built from the settings it is handed rather than from the cached ones, so what
+    a given environment produces can be asked for rather than assumed. The module
+    applies this to the running configuration once, below, and that is what the
+    application authorizes against; a caller holding some other ``Settings`` — a
+    check on the environment a clean checkout gets — derives that environment's
+    registry instead of restating what it believes it to hold.
+    """
+    redirect_uri = settings.frontend_hostname.rstrip("/") + "/auth/callback"
+    configs = {
+        "EPIC": {
+            "client_id": settings.epic_client_id,
+            "client_secret": settings.epic_client_secret,
+            "redirect_uri": redirect_uri,
+            "scopes": _DEFAULT_SCOPES,
+            "allowed_issuers": [settings.epic_issuer] if settings.epic_issuer else [],
+        },
+        "EPIC_SANDBOX": {
+            "client_id": settings.epic_sandbox_client_id,
+            "client_secret": settings.epic_sandbox_client_secret,
+            "redirect_uri": redirect_uri,
+            "scopes": _DEFAULT_SCOPES,
+            "allowed_issuers": [
+                "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+            ],
+        },
+        # Public SMART App Launcher. A public client (no secret) that relies on
+        # PKCE; the launcher does not validate the client_id, so a default keeps
+        # the flow runnable without any registration.
+        "SMART_LAUNCHER": {
+            "client_id": settings.smart_launcher_client_id or "smart-fhir-backend",
+            "client_secret": None,
+            "redirect_uri": redirect_uri,
+            "scopes": _DEFAULT_SCOPES,
+            # The launcher carries a standalone launch's context in the aud path
+            # (.../v/r4/sim/<base64 options>/fhir) and refuses one made against the
+            # plain FHIR base with "Invalid launch options". So the issuer offered
+            # here — which is what /providers advertises and a caller connects with —
+            # is the sim form, with an empty options object (base64 "{}"). Empty is
+            # enough: it satisfies the launcher's parse and leaves it to prompt for
+            # the patient, which is what a standalone launch is supposed to do.
+            "allowed_issuers": [
+                "https://launch.smarthealthit.org/v/r4/sim/e30/fhir",
+            ],
+            # Accept any FHIR base under the launcher's r4 tree, so a caller that
+            # builds its own sim options, or uses the plain base for an EHR launch,
+            # still authorizes. Safe as a prefix only here: this is a public client
+            # (no secret is ever sent), the prefix is same-host, and it ends in
+            # "/v/r4/" so a suffix look-alike host such as
+            # "launch.smarthealthit.org.evil.example/..." cannot match. Real EHRs
+            # keep exact-match allowlisting (no prefixes) for tenant isolation.
+            "allowed_issuer_prefixes": [
+                "https://launch.smarthealthit.org/v/r4/",
+            ],
+        },
+        # Cerner / Oracle Health sandbox, registered as a confidential patient-facing
+        # client: the exchange authenticates with the secret, and discovery advertises
+        # S256 so the same adapter turns on PKCE alongside it.
+        # Cerner serves one tenant's data at a different host per persona, and the host
+        # decides who may sign in: fhir-myrecord is where a patient authenticates to
+        # reach their own record, fhir-ehr-code where a clinician reaches the patients
+        # they are authorized for. Each publishes its own discovery document naming a
+        # different authorize endpoint, so the issuer is what selects the persona. This
+        # is the patient one, matching an application registered as patient-facing.
+        "CERNER_SANDBOX": {
+            "client_id": settings.cerner_client_id,
+            "client_secret": settings.cerner_client_secret,
+            "redirect_uri": redirect_uri,
+            "scopes": _CERNER_SCOPES,
+            "allowed_issuers": [
+                "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
+            ],
+        },
+    }
+    # Validated on the way out, so a misconfigured prefix fails where the registry
+    # is built: at import for the application's own, and inside the call for one
+    # built from any other environment.
+    validate_issuer_prefixes(configs)
+    return configs
 
 
 def validate_issuer_prefixes(configs: dict) -> None:
@@ -141,22 +164,30 @@ def validate_issuer_prefixes(configs: dict) -> None:
                 )
 
 
-# Validate at import so a misconfigured prefix fails at startup, not at runtime.
-validate_issuer_prefixes(EHR_CONFIGS)
+# What the running application authorizes against, built once at import from the
+# process-wide settings. Consumers reach it through this module rather than by
+# importing the name, so substituting it reaches all of them.
+EHR_CONFIGS = build_ehr_configs(get_settings())
 
 
-def configured_providers() -> list[dict]:
+def configured_providers(configs: dict | None = None) -> list[dict]:
     """The providers this backend can actually authorize against, for the frontend's
     dropdown: one ``{"provider", "iss", "name"}`` entry per allowed issuer.
 
     Providers with no ``client_id`` are skipped — ``/auth/connect`` rejects those as
-    unconfigured, so offering them would be a dead end. Derived from ``EHR_CONFIGS`` so
+    unconfigured, so offering them would be a dead end. Derived from the registry so
     the list never drifts from what we can connect to, and grows automatically as
     providers are added (nothing to keep in sync on the frontend). An issuer is listed
     once even if two providers allow it, since the frontend keys its options by issuer.
+
+    ``configs`` defaults to this module's registry, read at call time so that
+    substituting ``EHR_CONFIGS`` still reaches here, and is passed by a caller
+    asking what some other environment would offer.
     """
+    if configs is None:
+        configs = EHR_CONFIGS
     by_issuer: dict[str, dict] = {}
-    for key, ehr in EHR_CONFIGS.items():
+    for key, ehr in configs.items():
         if not ehr.get("client_id"):
             continue
         for iss in ehr.get("allowed_issuers", []):
@@ -340,6 +371,16 @@ def resources_for(tier: ResourceTier) -> dict:
     return _select(
         RESOURCE_FETCH_CONFIG.keys() if tier is ResourceTier.ALL else US_CORE_RESOURCES
     )
+
+
+def fhir_types_for(tier: ResourceTier) -> frozenset[str]:
+    """The FHIR types a tier reads, as against the fetch config rows naming them.
+
+    Not one per row: the Observation searches are one type split by category on
+    our side, so a set of rows over-counts what a server is actually asked for.
+    Derived here rather than at each caller, beside the table it is derived from.
+    """
+    return frozenset(fhir_type_for(entry) for entry in resources_for(tier).values())
 
 
 def resources_named(names) -> dict:

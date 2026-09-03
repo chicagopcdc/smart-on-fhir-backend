@@ -55,7 +55,7 @@ async def test_an_unmodelled_failure_is_logged_and_isolated(
     # The premise: the message really does quote the patient's data back.
     assert BIRTH_DATE in str(error), "the fixture no longer proves anything"
 
-    async def boom(access_token, base_url, fhir_patient_id, resource_types):
+    async def boom(access_token, base_url, fhir_patient_id, resource_types, scope=None):
         raise error
 
     monkeypatch.setattr(patients.service, "fetch_fhir_resources", boom)
@@ -94,7 +94,9 @@ async def test_one_connection_failing_does_not_disturb_the_others(
     )
     error = _validation_error()
 
-    async def selective(access_token, base_url, fhir_patient_id, resource_types):
+    async def selective(
+        access_token, base_url, fhir_patient_id, resource_types, scope=None
+    ):
         if fhir_patient_id == FHIR_PATIENT_ID:
             raise error
         return {

@@ -24,7 +24,21 @@ _WELL_KNOWN_PATH = "/.well-known/smart-configuration"
 
 
 class SMARTDiscoveryError(Exception):
-    """Base class for discovery failures."""
+    """Base class for discovery failures.
+
+    ``status_code`` is what the server answered with, where it answered at all,
+    carried on the exception rather than only written into its message. The
+    message names the URL fetched and quotes the parser's complaint, neither of
+    which this application repeats back to a caller or writes to a log, so a
+    status left only in there would be readable by parsing prose and no other
+    way. It is also what separates the two failures ``DiscoveryUnreachableError``
+    covers: a server refusing an unauthenticated request is a settled answer, a
+    connection that was never made is a bad moment worth retrying.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class DiscoveryNotFoundError(SMARTDiscoveryError):
@@ -37,6 +51,26 @@ class DiscoveryUnreachableError(SMARTDiscoveryError):
 
 class DiscoveryParseError(SMARTDiscoveryError):
     """The document was fetched but is not a valid SMART configuration."""
+
+
+def failure_status(exc: SMARTDiscoveryError) -> str:
+    """Which failure this is, in the vocabulary the API answers checks in.
+
+    Lives beside the exceptions rather than at either caller, because there are
+    two — the endpoint check answers it to a caller, and an authorization writes
+    it to the log — and a fifth failure added here has to reach both. Restated at
+    one of them, a new case would quietly read as ``unreachable`` on that side
+    only, while the other reported it correctly.
+
+    The strings are ``EndpointCheckStatus`` in ``app/api/schemas.py``; naming that
+    type here would point this module at the API layer, which it otherwise knows
+    nothing about.
+    """
+    if isinstance(exc, DiscoveryNotFoundError):
+        return "no_smart_configuration"
+    if isinstance(exc, DiscoveryParseError):
+        return "invalid_smart_configuration"
+    return "unreachable"
 
 
 @dataclass(frozen=True)
@@ -96,10 +130,11 @@ class SMARTDiscovery:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise DiscoveryNotFoundError(
-                    f"No SMART configuration at {url} (HTTP 404)"
+                    f"No SMART configuration at {url} (HTTP 404)", status_code=404
                 ) from exc
             raise DiscoveryUnreachableError(
-                f"{url} returned HTTP {exc.response.status_code}"
+                f"{url} returned HTTP {exc.response.status_code}",
+                status_code=exc.response.status_code,
             ) from exc
         except httpx.RequestError as exc:
             raise DiscoveryUnreachableError(f"Could not reach {url}: {exc!r}") from exc
