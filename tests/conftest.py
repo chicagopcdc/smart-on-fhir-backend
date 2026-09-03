@@ -36,7 +36,7 @@ from app.providers.models import (  # noqa: E402
     SMARTConfiguration,
     TokenSet,
 )
-from tests.app_harness import load_fixture  # noqa: E402
+from tests.app_harness import load_fixture, save_fixture  # noqa: E402
 
 
 class StubProvider(FHIRProvider):
@@ -53,6 +53,33 @@ class StubProvider(FHIRProvider):
 
     async def revoke_token(self, config, token, *, token_type_hint) -> bool:
         raise NotImplementedError
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--refresh-fixtures",
+        action="store_true",
+        default=False,
+        help=(
+            "With -m live: write each server's current answer back over the "
+            "capture that stands in for it, so `git diff tests/fixtures/` "
+            "becomes the report of what drifted."
+        ),
+    )
+
+
+@pytest.fixture
+def recapture(request):
+    """Write a live response back over the fixture it was captured into.
+
+    A no-op unless --refresh-fixtures was passed, so an ordinary live run reads
+    the network and touches nothing on disk. Handed to the tests as a callable
+    rather than as a flag they each branch on, so the one decision about whether
+    this run writes anything is made once, here.
+    """
+    if not request.config.getoption("--refresh-fixtures"):
+        return lambda name, payload: None
+    return save_fixture
 
 
 @pytest.fixture(autouse=True)

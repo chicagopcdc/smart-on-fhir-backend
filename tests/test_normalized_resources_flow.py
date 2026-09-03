@@ -18,6 +18,9 @@ import logging
 import pytest
 import respx
 
+from app.fhir import service
+from app.providers.config import ResourceTier, resources_for
+from tests import upstream
 from tests.app_harness import (
     CERNER_SANDBOX,
     SMART_LAUNCHER,
@@ -25,6 +28,11 @@ from tests.app_harness import (
     read_resources,
     serve_record,
 )
+
+# The same constants the offline suite pins the shape against, imported rather
+# than restated: a second copy would let the live shape and the mocked one drift
+# apart while both files stayed green.
+from tests.test_normalization import ENVELOPE_KEYS, SUMMARY_KEYS
 
 LAUNCHER = {**SMART_LAUNCHER, "id": "launcher", "record": "launcher_patient_record.json"}
 # The record was captured from Cerner's open endpoint, which is the
@@ -201,4 +209,80 @@ async def test_the_whole_response_is_json_serializable(tmp_path):
     # result is the kind of value that would break serialization silently.
     record = await read_record(LAUNCHER, tmp_path, params={"include": "all"})
 
+    json.dumps(record)
+
+
+# --- opt-in: a real record, off a server that needs no login. -----------------
+# Run with `pytest -m live`. The captures above were taken from these two, so
+# this is the same claim as the tests above made against what the servers send
+# today. Only the reading half runs live: an open endpoint has no OAuth to
+# authorize against, and the mocked flow already covers that half.
+
+OPEN_SERVERS = [
+    pytest.param(
+        {
+            # The launcher's own base is not usable here. It validates a bearer
+            # token whenever one is present and this read always sends one, so it
+            # answers 401 to everything. This is the open data server behind it,
+            # holding the same records the launcher capture was taken from.
+            "name": "the SMART reference server",
+            "base": "https://r4.smarthealthit.org",
+            "patient": "8f65af92-c3c9-4316-bb7f-862c248788dd",
+        },
+        id="smart-reference",
+    ),
+    pytest.param(
+        {
+            "name": "Cerner's open endpoint",
+            "base": (
+                "https://fhir-open.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"
+            ),
+            "patient": "12724066",
+        },
+        id="cerner-open",
+    ),
+]
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("server", OPEN_SERVERS)
+async def test_live_a_real_record_still_normalizes_into_the_same_envelope(server):
+    """Whatever the server sends today, the caller gets the envelope back."""
+    # A placeholder rather than an empty string: these endpoints ignore the
+    # header, but `Bearer ` with nothing after it is not a legal header value and
+    # httpx refuses to send it, which would look like every server being down.
+    record = await service.fetch_fhir_resources(
+        "open", server["base"], server["patient"], resources_for(ResourceTier.US_CORE)
+    )
+
+    # Patient is the bellwether. If it did not arrive, the server is not serving
+    # and nothing else here means anything; if it did, the server is up and
+    # anything else wrong is a change worth failing over.
+    patient = record["Patient"]
+    if patient["status"] != "ok":
+        # The error text rides along deliberately. A skip is quiet, and a broken
+        # request looks exactly like a server that is down until you can read why.
+        upstream.outage(
+            server["name"],
+            f"the patient read answered {patient['statusCode']}: {patient['error']}",
+        )
+
+    assert patient["count"] == 1, f"{server['name']} no longer serves that patient"
+    assert patient["entries"][0]["title"], "the patient arrived without a name"
+
+    for name, envelope in record.items():
+        assert set(envelope) == ENVELOPE_KEYS, name
+        for entry in envelope["entries"]:
+            assert set(entry) == SUMMARY_KEYS, f"{name}/{entry.get('id')}"
+
+    # Lenient on purpose past the patient. The app sends no `_count`, and Cerner's
+    # shared sandbox times out on the bulkier searches under that; a partial read
+    # is a fact about the sandbox's data, not about this code.
+    answered = [name for name, envelope in record.items() if envelope["status"] == "ok"]
+    assert len(answered) > 1, (
+        f"{server['name']} served the patient and nothing else. Answered: {answered}"
+    )
+
+    # The models parse FHIR decimals as Decimal, which json refuses, so a live lab
+    # result is exactly the value that would break the response silently.
     json.dumps(record)

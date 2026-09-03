@@ -15,6 +15,8 @@ fails if the shapes that matter stop being represented.
 
 from __future__ import annotations
 
+import copy
+from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -25,11 +27,13 @@ from pydantic import TypeAdapter, ValidationError
 from app.providers.discovery import DiscoveryParseError, SMARTDiscovery
 from app.providers.generic import GenericSMARTProvider, SMARTProviderError
 from app.providers.models import SMARTConfiguration
-from tests.app_harness import load_fixture
+from tests import upstream
+from tests.app_harness import load_fixture, save_fixture
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
-CORPUS = load_fixture("public_smart_configurations.json")
+CORPUS_FILE = "public_smart_configurations.json"
+CORPUS = load_fixture(CORPUS_FILE)
 USABLE = [pytest.param(s, id=s["id"]) for s in CORPUS["servers"] if s["usable"]]
 REFUSED = [pytest.param(s, id=s["id"]) for s in CORPUS["servers"] if not s["usable"]]
 SERVERS = USABLE + REFUSED
@@ -367,11 +371,52 @@ def _parses_as(annotation, value) -> bool:
 
 def test_every_entry_says_where_it_came_from_and_why_it_is_here():
     """A capture with no source cannot be re-verified, and one with no note becomes
-    padding the next person cannot safely remove."""
+    padding the next person cannot safely remove. An undated one cannot be read at
+    all: how far a document has drifted is a question about how old it is."""
     for server in CORPUS["servers"]:
         assert server["source"].startswith("https://"), server["id"]
         assert len(server["note"]) > 40, server["id"]
         assert server["kind"] in {"regression", "refused", "branch", "production"}
+        assert date.fromisoformat(server["capturedAt"]), server["id"]
+
+
+def test_a_partial_refresh_dates_what_it_touched_and_nothing_else():
+    """The refresh had to reach every one of the sixteen to record a date at all.
+
+    Sixteen third-party vendors are rarely all reachable at once — one is enough to
+    hold the whole run back — so that condition almost never held, and a run that
+    rewrote fifteen configurations left all sixteen dates saying otherwise. Dating
+    per entry is what makes a partial sweep the ordinary outcome it always was.
+    """
+    manifest = load_fixture(CORPUS_FILE)
+    # Deep-copied, and the entries read out of the copy, so that a merge which
+    # mutated its argument could not make these comparisons compare a value to
+    # itself and pass without doing anything.
+    original = copy.deepcopy(manifest)
+    reached, missed = original["servers"][0], original["servers"][1]
+
+    merged = merge_recaptured(
+        manifest, {reached["id"]: {"authorization_endpoint": "https://new.example/a"}},
+        "2030-01-01",
+    )
+
+    after = {s["id"]: s for s in merged["servers"]}
+    assert after[reached["id"]]["capturedAt"] == "2030-01-01"
+    assert after[reached["id"]]["configuration"] == {
+        "authorization_endpoint": "https://new.example/a"
+    }
+
+    assert after[missed["id"]]["capturedAt"] == missed["capturedAt"]
+    assert after[missed["id"]]["configuration"] == missed["configuration"]
+
+    # The reason an entry is in the corpus is not a re-fetch's to revise.
+    for before in original["servers"]:
+        for field in ("id", "label", "source", "kind", "usable", "note"):
+            assert after[before["id"]][field] == before[field], field
+
+    # `CORPUS` is read once at import and shared by every test in this file, so a
+    # merge that wrote through its argument would corrupt the corpus for all of them.
+    assert manifest == original, "merge_recaptured wrote through its argument"
 
 
 # --- opt-in: re-check the captures against the real servers.
@@ -379,20 +424,86 @@ def test_every_entry_says_where_it_came_from_and_why_it_is_here():
 # server changed what it publishes, and the entry needs re-capturing.
 
 
+def merge_recaptured(manifest: dict, refreshed: dict[str, dict], on: str) -> dict:
+    """``manifest`` with ``refreshed`` folded in, each entry it touched dated ``on``.
+
+    The date sits on the entry rather than on the file because a refresh reaches
+    whichever servers happen to answer. Sixteen third-party vendors are rarely all
+    up at once, so a partial sweep is the ordinary outcome, not the exception, and
+    one date over the whole file could describe neither what was re-fetched nor
+    what was left alone.
+
+    Everything except the configuration and that date is left exactly as it was:
+    an entry's `kind`, `usable` and `note` say why it is in the corpus, which is a
+    judgement no re-fetch is in a position to revise.
+    """
+    merged = {**manifest, "servers": [dict(entry) for entry in manifest["servers"]]}
+    for entry in merged["servers"]:
+        if entry["id"] in refreshed:
+            entry["configuration"] = refreshed[entry["id"]]
+            entry["capturedAt"] = on
+    return merged
+
+
+@pytest.fixture(scope="session")
+def corpus_recapture(request):
+    """Collect refreshed entries and write the manifest once, at the end.
+
+    The check below is parametrized sixteen ways over a single file, so writing
+    per entry would rewrite the whole manifest sixteen times.
+    """
+    if not request.config.getoption("--refresh-fixtures"):
+        yield lambda server_id, configuration: None
+        return
+
+    refreshed: dict[str, dict] = {}
+
+    def record(server_id: str, configuration: dict) -> None:
+        refreshed[server_id] = configuration
+
+    yield record
+
+    if not refreshed:
+        return
+
+    save_fixture(
+        CORPUS_FILE,
+        merge_recaptured(
+            load_fixture(CORPUS_FILE), refreshed, date.today().isoformat()
+        ),
+    )
+
+
 @pytest.mark.live
 @pytest.mark.parametrize("server", SERVERS)
-async def test_live_each_server_still_publishes_what_was_captured(server):
-    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
-        response = await client.get(
-            server["source"].rstrip("/") + WELL_KNOWN,
-            headers={"Accept": "application/json"},
-        )
+async def test_live_each_server_still_publishes_what_was_captured(
+    server, corpus_recapture
+):
+    name = server["label"]
 
+    with upstream.reaching(name):
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+            response = await client.get(
+                server["source"].rstrip("/") + WELL_KNOWN,
+                headers={"Accept": "application/json"},
+            )
+    upstream.served(name, response)
+
+    # A vendor here is one this backend does not hold credentials for and cannot
+    # authorize against, so it is free to refuse an anonymous reader without that
+    # being a change we need to act on. The rule is stricter for the issuers we do
+    # authorize against, in test_smart_discovery_flow.py, where a refusal means the
+    # login this backend offers has quietly stopped being available.
     if response.status_code == 403:
-        pytest.skip("this vendor refuses an unauthenticated configuration request")
+        pytest.skip(f"{name} refuses an unauthenticated configuration request")
 
     assert response.status_code == 200, response.text
     live = response.json()
+
+    # `server["configuration"]` was read at import, so this compares against what
+    # was on disk when the run started even on a refresh run.
+    corpus_recapture(server["id"], live)
+
     assert sorted(live) == sorted(server["configuration"]), (
-        "the server changed which fields it publishes"
+        f"{name} changed which fields it publishes"
     )
