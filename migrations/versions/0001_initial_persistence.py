@@ -5,8 +5,8 @@ Revises:
 Create Date: 2026-06-07
 
 The encrypted token columns are plain TEXT at the database level; encryption is
-applied in the application (the EncryptedString column type), so the schema
-stays decoupled from the crypto implementation.
+applied in the application, so the schema stays decoupled from the crypto
+implementation.
 """
 
 from __future__ import annotations

@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.types import TypeDecorator
 
 from app.core import crypto
 
@@ -44,24 +43,6 @@ def new_patient_id() -> str:
 
 class Base(DeclarativeBase):
     """Declarative base shared by every model; Alembic reads its metadata."""
-
-
-class EncryptedString(TypeDecorator):
-    """A Text column encrypted on write and decrypted on read.
-
-    Encryption lives in the column type rather than in callers, so every read
-    and write path is covered and application code never handles ciphertext.
-    The value stored in the database is Fernet ciphertext.
-    """
-
-    impl = Text
-    cache_ok = True
-
-    def process_bind_param(self, value: str | None, dialect) -> str | None:
-        return crypto.encrypt(value) if value is not None else None
-
-    def process_result_value(self, value: str | None, dialect) -> str | None:
-        return crypto.decrypt(value) if value is not None else None
 
 
 class OAuthState(Base):
@@ -211,8 +192,21 @@ class ProviderToken(Base):
     patient_fhir_id: Mapped[str] = mapped_column(String(128))
     provider: Mapped[str] = mapped_column(String(64))
     iss: Mapped[str] = mapped_column(String(512))
-    access_token: Mapped[str] = mapped_column(EncryptedString)
-    refresh_token: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    # Held as Fernet ciphertext and reached through the properties below, which
+    # are what every caller uses: no application code handles ciphertext.
+    #
+    # Decrypting on the attribute rather than in the column type is deliberate.
+    # A TypeDecorator's result processor runs while SQLAlchemy is building rows,
+    # so a value that will not decrypt fails the whole load: the connection could
+    # not be listed, let alone reported as unreadable, and every other connection
+    # on the same record went down with it — including through the endpoint for
+    # disconnecting the bad one. That is reachable without any corruption, by a
+    # key rotation that drops a key still in use. A row whose secret cannot be
+    # read is still a row, so it loads, and only reading the secret fails.
+    encrypted_access_token: Mapped[str] = mapped_column("access_token", Text)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(
+        "refresh_token", Text, nullable=True
+    )
     scope: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # When a read last reached the record this connection belongs to. Null means
@@ -223,3 +217,29 @@ class ProviderToken(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow
     )
+
+    @property
+    def access_token(self) -> str | None:
+        """The token in the clear. Raises ``TokenEncryptionError`` if no key fits.
+
+        None only on a row that has not been given one yet: the column is not
+        nullable, so anything loaded from the database has a value.
+        """
+        stored = self.encrypted_access_token
+        return crypto.decrypt(stored) if stored is not None else None
+
+    @access_token.setter
+    def access_token(self, value: str) -> None:
+        self.encrypted_access_token = crypto.encrypt(value)
+
+    @property
+    def refresh_token(self) -> str | None:
+        """The refresh token in the clear, or None where the server issued none."""
+        stored = self.encrypted_refresh_token
+        return crypto.decrypt(stored) if stored is not None else None
+
+    @refresh_token.setter
+    def refresh_token(self, value: str | None) -> None:
+        self.encrypted_refresh_token = (
+            crypto.encrypt(value) if value is not None else None
+        )

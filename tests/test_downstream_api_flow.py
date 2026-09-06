@@ -20,19 +20,25 @@ from app.fhir import summary as summary_module
 from tests.app_harness import (
     CERNER_SANDBOX as CERNER,
     SMART_LAUNCHER as LAUNCHER,
+    age_tokens,
     app_db,
     client,
     connect,
     load_fixture,
     mock_server,
     serve_record,
+    token_endpoint,
     token_response,
 )
 
 
-def _serve(server: dict, responder) -> None:
-    """Answer this server's FHIR calls, after its auth routes are registered."""
-    respx.get(url__startswith=server["iss"]).mock(side_effect=responder)
+def _serve(server: dict, responder):
+    """Answer this server's FHIR calls, after its auth routes are registered.
+
+    Returns the route, which is where a test looks to see what was actually asked
+    for — as against what came back.
+    """
+    return respx.get(url__startswith=server["iss"]).mock(side_effect=responder)
 
 
 async def _connect_server(http, server: dict, *, link_session: str | None = None) -> dict:
@@ -416,3 +422,254 @@ async def test_reading_without_a_session_is_refused(db_url):
     assert missing.status_code == 401
     assert malformed.status_code == 401
     assert unknown.status_code == 401
+
+
+# --- a grant narrower than the request ----------------------------------------
+
+# Three of the nine FHIR types the default tier reads. The launcher asks for
+# `patient/*.read`, so this is a consent screen where someone ticked a subset,
+# which is the ordinary way a narrowing happens.
+NARROW_SCOPE = (
+    "launch/patient openid offline_access "
+    "patient/Patient.read patient/Condition.read patient/Observation.read"
+)
+WITHHELD = {
+    "AllergyIntolerance",
+    "DiagnosticReport",
+    "Encounter",
+    "Immunization",
+    "MedicationRequest",
+    "Procedure",
+}
+
+
+async def _read_under(db_url, scope: str | None):
+    """Connect the launcher under one granted scope and read the record back.
+
+    ``scope=None`` is a server that states none at all, which is not the same as
+    one that granted nothing. Returns the response and the FHIR route, since what
+    these tests are about is as often what was *not* requested as what came back.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    granted = token_response(record["patientId"])
+    if scope is None:
+        granted.pop("scope")
+    else:
+        granted["scope"] = scope
+
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(http, LAUNCHER, granted)
+            route = _serve(LAUNCHER, serve_record(record))
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+    return response, route
+
+
+@respx.mock
+async def test_a_narrowed_grant_reads_what_it_was_given_and_says_so(db_url):
+    """A partial grant is a connection that works partly, not nine mysteries.
+
+    Before this, the stored scope was written and never read: every withheld type
+    was requested anyway, refused with a 403, and reported as a failed read with
+    no explanation, on every read, forever.
+    """
+    response, route = await _read_under(db_url, NARROW_SCOPE)
+
+    assert response.status_code == 200, response.text
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "degraded"
+
+    resources = connection["resources"]
+    # Every requested type is still reported, so a consumer needs no new branch to
+    # find out something is missing.
+    assert set(resources) == set(response.json()["types"])
+
+    for name, envelope in resources.items():
+        if name in WITHHELD:
+            assert envelope["status"] == "error", name
+            # Null rather than 403: nothing was asked, so claiming the provider
+            # refused would put words in its mouth.
+            assert envelope["statusCode"] is None, name
+            assert "not granted" in envelope["error"], name
+        else:
+            assert envelope["status"] == "ok", name
+
+    # And the requests were never spent. What a withheld type would have cost is
+    # a round trip and a 403, on every read.
+    requested = {str(call.request.url) for call in route.calls}
+    for withheld in WITHHELD:
+        assert not any(withheld in url for url in requested), (
+            f"{withheld} was fetched from a connection not granted it"
+        )
+    assert any("Condition" in url for url in requested), (
+        "nothing was fetched at all, so this proves nothing about what was skipped"
+    )
+
+
+@respx.mock
+async def test_a_narrowed_grant_names_what_is_missing_in_the_summary(db_url):
+    """The merged view has to be visibly partial rather than look like a thin chart."""
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(record["patientId"], scope=NARROW_SCOPE),
+            )
+            _serve(LAUNCHER, serve_record(record))
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/summary",
+                headers=_auth(body["sessionId"]),
+            )
+
+    summary_body = response.json()
+    assert summary_body["connections"][0]["status"] == "degraded"
+
+    named = {
+        issue["type"]
+        for issue in summary_body["issues"]
+        if "not granted" in issue["error"]
+    }
+    assert WITHHELD <= named, f"the summary does not say what was withheld: {named}"
+
+    # What was granted still fills the chart.
+    assert any(section["items"] for section in summary_body["sections"])
+
+
+@respx.mock
+async def test_a_grant_covering_nothing_asks_for_consent_again(db_url):
+    """The one narrowing where reconnecting is genuinely the fix."""
+    response, route = await _read_under(
+        db_url, "launch/patient openid patient/Device.read"
+    )
+
+    assert response.status_code == 200
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "error"
+    assert connection["needsReauthorization"] is True
+    assert not route.calls, "a connection granted nothing still spent requests"
+
+
+@respx.mock
+async def test_a_server_that_states_no_scope_is_read_in_full(db_url):
+    """RFC 6749 §5.1: an omitted scope means the request was granted as asked.
+
+    Reading it as "granted nothing" would turn one quiet server into a record that
+    looks empty, which is the worst way to be wrong about this.
+    """
+    response, _ = await _read_under(db_url, None)
+
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "ok"
+    assert connection["resources"]["Immunization"]["status"] == "ok"
+
+
+@respx.mock
+async def test_a_grant_that_permits_no_reading_is_not_read_as_unrestricted(db_url):
+    """Naming a resource and permitting nothing on it is a restriction, not silence.
+
+    ``granted_types`` answers None for a grant it cannot act on, which has to
+    cover a server describing only the session — but a grant of
+    ``patient/Condition.c`` has named a resource and withheld reading it. Folding
+    that into "unrestricted" would fetch every type and collect a 403 for each,
+    which is the behaviour reading the scope at all exists to end.
+    """
+    response, route = await _read_under(
+        db_url, "launch/patient openid patient/Condition.c"
+    )
+
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "error"
+    assert not route.calls, "a grant permitting no reads still spent requests"
+
+
+@respx.mock
+async def test_a_refresh_that_narrows_the_grant_is_honoured_on_the_same_read(db_url):
+    """The scope a read obeys is the one the token it is using was issued under.
+
+    A refresh commits in a session of its own, so the connection instance this
+    request is holding still shows the wider scope it had a moment ago. Reading
+    from that would ask for types the new token does not cover and report the
+    refusals as the provider's fault.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    narrowed = "launch/patient offline_access patient/Patient.read patient/Condition.read"
+
+    async with app_db(db_url) as factory:
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_endpoint(
+                    record["patientId"],
+                    on_refresh=lambda granted: httpx.Response(
+                        200, json=granted(scope=narrowed)
+                    ),
+                ),
+            )
+            route = respx.get(url__startswith=LAUNCHER["iss"]).mock(
+                side_effect=serve_record(record)
+            )
+            # Due for renewal, so the read refreshes before it fans out.
+            await age_tokens(factory)
+
+            response = await http.get(
+                f"/patients/{body['patientId']}/resources",
+                headers=_auth(body["sessionId"]),
+            )
+
+    assert response.status_code == 200, response.text
+    [connection] = response.json()["connections"]
+    assert connection["status"] == "degraded"
+
+    withheld = connection["resources"]["Immunization"]
+    assert withheld["status"] == "error"
+    assert "not granted" in withheld["error"], (
+        "the read obeyed the scope from before the refresh"
+    )
+    requested = {str(call.request.url) for call in route.calls}
+    assert not any("Immunization" in url for url in requested)
+    assert connection["resources"]["Condition"]["status"] == "ok"
+
+
+@respx.mock
+async def test_the_deprecated_read_obeys_the_grant_too(db_url):
+    """Filtering lives in the fetch layer, so every caller gets it by reading.
+
+    This route predates per-connection reporting and was never taught about
+    scopes. It does not have to be: a request the grant forbids buys a 403 and
+    nothing else, so declining to send it belongs to reading rather than to each
+    route that reads.
+    """
+    record = load_fixture(LAUNCHER["record"])
+    async with app_db(db_url):
+        async with client() as http:
+            body = await connect(
+                http,
+                LAUNCHER,
+                token_response(
+                    record["patientId"],
+                    scope="launch/patient patient/Patient.read patient/Condition.read",
+                ),
+            )
+            route = _serve(LAUNCHER, serve_record(record))
+
+            response = await http.get(
+                "/fhir_resources", headers=_auth(body["sessionId"])
+            )
+
+    assert response.status_code == 200, response.text
+    resources = response.json()["resources"]
+    assert resources["Condition"]["status"] == "ok"
+    assert resources["Immunization"]["status"] == "error"
+    assert "not granted" in resources["Immunization"]["error"]
+
+    requested = {str(call.request.url) for call in route.calls}
+    assert not any("Immunization" in url for url in requested), (
+        "the deprecated route spent a request the grant forbids"
+    )

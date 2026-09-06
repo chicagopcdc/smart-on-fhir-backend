@@ -1,6 +1,5 @@
 """The application: middleware, lifespan, and the routers that make up the API."""
 
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api import auth, deps, health, patients, providers
+from app.api.middleware import REQUEST_ID_HEADER, RequestContext
 from app.core.config import get_settings
 from app.core.db import engine
+from app.core.logging import configure_logging
 from app.fhir import normalize
 
 DESCRIPTION = """
@@ -47,32 +48,6 @@ TAGS = [
 ]
 
 
-def configure_logging() -> None:
-    """Give this application's own log records somewhere to go, and only ours.
-
-    uvicorn configures three loggers of its own and leaves the root logger
-    alone, so anything logged under ``app.*`` falls back to the WARNING default
-    and every INFO record the application writes is dropped — including the one
-    reporting how many connections a sweep retired, which exists precisely so
-    that number is visible rather than inferred.
-
-    Lowering the level on ``app`` rather than on the root is the difference
-    between hearing this application and hearing every library it uses. httpx in
-    particular logs a line per request at INFO, and a single read fans out over
-    a dozen FHIR calls whose URLs carry the provider's own patient id — so a
-    root-level floor would write exactly the identifier the rest of this code
-    goes out of its way to keep out of logs. Records still reach the root
-    handler once made; it is the level on the originating logger that decides
-    whether they are made at all.
-
-    ``basicConfig`` is a no-op once the root logger has handlers, so a
-    deployment that configures its own logging keeps it, and this only supplies
-    a destination for one that does not.
-    """
-    logging.basicConfig(format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
-    logging.getLogger("app").setLevel(logging.INFO)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
@@ -94,6 +69,13 @@ app = FastAPI(
 app.state.limiter = deps.limiter
 app.add_exception_handler(RateLimitExceeded, deps.rate_limit_exceeded_handler)
 
+# Order matters here and is the opposite of how it reads. add_middleware puts
+# each one outside the last, so CORSMiddleware being added second leaves it
+# outermost — which is what lets the 500 RequestContext builds for an otherwise
+# uncaught failure pick up its Access-Control-Allow-Origin on the way out. See
+# app/api/middleware.py for why the alternatives do not.
+app.add_middleware(RequestContext)
+
 # Only the known frontend may call the API from a browser. Credentials are not
 # used (the session travels as a bearer token, not a cookie), so a wildcard
 # origin is neither needed nor safe to combine with credentials.
@@ -103,6 +85,10 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+    # Response headers are not readable from JavaScript unless they are named
+    # here, and an id a caller cannot read is one they cannot quote in a bug
+    # report.
+    expose_headers=[REQUEST_ID_HEADER],
 )
 
 app.include_router(auth.router)

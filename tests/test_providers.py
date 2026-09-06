@@ -28,20 +28,16 @@ async def test_providers_lists_the_configured_epic_sandbox():
     assert all(set(entry) == {"provider", "iss", "name"} for entry in body)
 
 
-def test_a_provider_without_credentials_is_omitted(monkeypatch):
-    monkeypatch.setattr(
-        config,
-        "EHR_CONFIGS",
+def test_a_provider_without_credentials_is_omitted():
+    listed = config.configured_providers(
         {
             "READY": {"client_id": "abc", "allowed_issuers": ["https://ready.example/fhir"]},
             "NOCREDS": {"client_id": None, "allowed_issuers": ["https://nocreds.example/fhir"]},
             # Same issuer as READY: the frontend keys its options by issuer, so it is
             # listed once (the first provider configured for it wins).
             "ALSO_READY": {"client_id": "xyz", "allowed_issuers": ["https://ready.example/fhir"]},
-        },
+        }
     )
-
-    listed = config.configured_providers()
 
     assert {p["provider"] for p in listed} == {"READY"}  # NOCREDS dropped, dupe collapsed
     assert listed[0]["iss"] == "https://ready.example/fhir"

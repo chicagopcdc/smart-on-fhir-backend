@@ -42,8 +42,10 @@ from app.core.db import (
     get_session,
     mark_record_used,
 )
+from app.core.crypto import TokenEncryptionError
+from app.core.logging import fields
 from app.fhir import service, summary
-from app.providers import config, registry
+from app.providers import config, registry, scopes
 from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError
 
@@ -117,11 +119,38 @@ UNRENEWABLE = _Refusal(
 EXPIRED = _Refusal("The stored token has expired; reconnect this provider", True)
 UNREADABLE = _Refusal("No resource could be read from this provider")
 UNMODELLED = _Refusal("This provider could not be read")
+# Not needs_reauthorization, and that is the whole point. A token that will not
+# decrypt is almost always a key rotation that dropped a key still in use: the
+# stored tokens are intact and want the old key back. Sending the patient round
+# the consent screen would overwrite the ciphertext under the new key, losing the
+# evidence and clearing the symptom while the misconfiguration stands.
+UNDECRYPTABLE = _Refusal("This connection cannot be read; the server needs attention")
+# A grant this narrow is the one case where consenting again is genuinely the fix.
+UNGRANTED = _Refusal(
+    "This connection was not granted access to any of the requested records", True
+)
 
 
 def _refusal_for(error: tokens.TokenRefreshError) -> _Refusal:
     """How a failure to renew a token reads to whoever asked for the record."""
     return REVOKED if isinstance(error, tokens.ReauthorizationRequired) else UNRENEWABLE
+
+
+def _log_undecryptable(connection: ProviderToken) -> None:
+    """A stored token no configured key opens: ours to fix, not the patient's.
+
+    Written once and called from both read paths, so the event name and the
+    fields under it cannot come to differ between them.
+    """
+    logger.error(
+        "Stored token for %s could not be decrypted with any configured key",
+        connection.provider,
+        **fields(
+            event="connection.token.undecryptable",
+            provider=connection.provider,
+            patient_id=connection.patient_id,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -175,19 +204,27 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     """Read one connection, and say how completely it could be read.
 
     The issuer is the FHIR base URL, so it is also the base for resource calls.
-    The access token comes from storage (decrypted by the ORM) rather than from
-    the URL, so a bearer token never travels as a query parameter — and it is
-    renewed here first where it would otherwise lapse partway through the fan-out
-    below, which is why the token used is the one ``live_token`` hands back and
-    not the one still on the row.
+    The access token is decrypted on attribute access rather than travelling in
+    the URL, so a bearer token is never a query parameter — and a key that no
+    longer fits surfaces here, where the connection can be reported, rather than
+    while the row loads. It is renewed first where it would otherwise lapse
+    partway through the fan-out below, which is why the token used is the one
+    ``live_token`` hands back, along with the scope it was granted under, and not
+    what is still on the row.
     """
     try:
         live = await tokens.live_token(token)
     except tokens.TokenRefreshError as exc:
         return _ConnectionRead.refused(token, _refusal_for(exc))
+    except TokenEncryptionError:
+        # Reading the row succeeded; reading what is in it did not. Ours to fix,
+        # not the patient's, so it is logged as a fault on this side and the rest
+        # of the record is left alone.
+        _log_undecryptable(token)
+        return _ConnectionRead.refused(token, UNDECRYPTABLE)
 
     resources = await service.fetch_fhir_resources(
-        live.access_token, token.iss, token.patient_fhir_id, resource_types
+        live.access_token, token.iss, token.patient_fhir_id, resource_types, live.scope
     )
 
     failed = [
@@ -200,10 +237,16 @@ async def _read_connection(token: ProviderToken, resource_types: dict) -> _Conne
     if len(failed) < len(resources):
         return _ConnectionRead(token, resources, "degraded", None)
 
-    # Nothing came back at all. A token that has run out with nothing to renew
-    # it from is by far the likeliest reason and the only one the caller can act
-    # on, so say so rather than repeating whichever refusal the provider
-    # happened to word first.
+    # Nothing came back at all, and which of two reasons that is settles what to
+    # tell the patient. A grant covering none of what was asked is the one
+    # narrowing consenting again would actually fix; anything else is a token
+    # that has run out with nothing to renew it from, by far the likeliest and
+    # the only other one the caller can act on. Either beats repeating whichever
+    # refusal the provider happened to word first.
+    readable, _ = scopes.partition(resource_types, live.scope)
+    if not readable:
+        return _ConnectionRead.refused(token, UNGRANTED, resources)
+
     expired = live.expires_at is not None and live.expires_at <= utcnow()
     return _ConnectionRead.refused(token, EXPIRED if expired else UNREADABLE, resources)
 
@@ -436,13 +479,19 @@ async def _revoke_at_provider(connection: ProviderToken) -> bool:
     not to find out whether the provider was reachable, and letting an outage
     refuse the request would leave them connected to a server they are trying to
     leave. What is lost is only the remote half — our copy goes either way.
+
+    A token that will not decrypt is swallowed the same way, and matters more:
+    it is the one a caller is most likely to be here to remove, so the request
+    that ends it must not be the request that fails on reading it.
     """
-    token, hint = (
-        (connection.refresh_token, "refresh_token")
-        if connection.refresh_token is not None
-        else (connection.access_token, "access_token")
-    )
     try:
+        # Presence off the column, value off the property: asking the property
+        # twice would decrypt twice, the first only to compare against None.
+        token, hint = (
+            (connection.refresh_token, "refresh_token")
+            if connection.encrypted_refresh_token is not None
+            else (connection.access_token, "access_token")
+        )
         adapter = registry.for_connection(connection.provider, connection.iss)
         config = await adapter.discover(connection.iss)
         return await adapter.revoke_token(config, token, token_type_hint=hint)
@@ -450,6 +499,7 @@ async def _revoke_at_provider(connection: ProviderToken) -> bool:
         registry.ProviderNotConfigured,
         SMARTDiscoveryError,
         SMARTProviderError,
+        TokenEncryptionError,
         httpx.HTTPError,
     ):
         return False
@@ -499,12 +549,21 @@ async def get_all_resource(
         # This shape predates per-connection reporting, so it carries the wording
         # without the flag beside it that says whether reconnecting would help.
         return JSONResponse({"error": _refusal_for(exc).error}, status_code=502)
+    except TokenEncryptionError:
+        # The same fault the per-connection paths report as UNDECRYPTABLE. This
+        # route reads one connection rather than a record, so there is nothing to
+        # keep intact beside it — but it still answers rather than raising, since
+        # the frontend that has not moved off this route yet would otherwise see a
+        # bare 500 for a problem the newer routes describe in a sentence.
+        _log_undecryptable(token_row)
+        return JSONResponse({"error": UNDECRYPTABLE.error}, status_code=502)
 
     resources = await service.fetch_fhir_resources(
         live.access_token,
         token_row.iss,
         app_session.patient_fhir_id,
         config.resources_for(include),
+        live.scope,
     )
 
     return JSONResponse(

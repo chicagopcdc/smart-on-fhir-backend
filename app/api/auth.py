@@ -41,7 +41,8 @@ from app.core.db import (
     get_session,
     persist_token,
 )
-from app.providers import config
+from app.core.logging import fields
+from app.providers import config, discovery, scopes
 from app.providers.discovery import SMARTDiscoveryError
 from app.providers.generic import SMARTProviderError, TokenExchangeError
 from app.providers.registry import provider_for
@@ -49,6 +50,88 @@ from app.providers.registry import provider_for
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["authorization"])
+
+
+def _upstream_reason(exc: Exception) -> tuple[str, int | None]:
+    """What this failure was, and what the server answered if it answered at all.
+
+    A discovery failure is named by ``discovery.failure_status``, the same
+    function `GET /providers/endpoint-check` answers callers with, so a log line
+    and a pre-flight check describe the same server the same way. It also folds
+    two situations into ``unreachable`` that read alike here and not at all alike
+    to whoever has to act on them — a server that refused, and one that never
+    answered — which is what the status beside the reason is for.
+    """
+    if isinstance(exc, SMARTDiscoveryError):
+        return discovery.failure_status(exc), exc.status_code
+    if isinstance(exc, TokenExchangeError):
+        # RFC 6749 §5.2 spends a distinct code on each way an exchange can be
+        # refused; a server that sent none has still refused it.
+        return exc.oauth_error or "rejected", exc.status_code
+    if isinstance(exc, SMARTProviderError):
+        return "unsupported_client_authentication", None
+    return "unreachable", None
+
+
+def _log_upstream_failure(exc: Exception, *, stage: str, provider: str, iss: str) -> None:
+    """Name which upstream failure a refusal was, without changing the refusal.
+
+    All of these answer a caller the same sentence, deliberately: the wording that
+    helps a patient is not the wording that helps whoever has to fix it, and
+    naming a server's fault back to the browser tells anyone probing issuers what
+    they found. So the distinction is kept here, where it used to be discarded — a
+    connect that failed left nothing behind saying which of four things had
+    happened, and diagnosing one meant reproducing it by hand.
+
+    The exception's own message is not written. It carries the URL fetched and the
+    parser's complaint, and a complaint quotes what it choked on.
+    """
+    reason, status = _upstream_reason(exc)
+    logger.warning(
+        "Upstream %s failed for %s: %s",
+        stage,
+        provider,
+        reason,
+        **fields(
+            event=f"auth.{stage}.failed",
+            provider=provider,
+            iss=iss,
+            reason=reason,
+            status=status,
+            exception=type(exc).__name__,
+        ),
+    )
+
+
+def _log_scope_narrowing(provider: str, granted: str | None) -> None:
+    """Say so once, here, when a grant covers less of the record than was asked for.
+
+    A narrowing is not an error and does not change what the authorization
+    returns: the connection works, for part of the record. But it is the sole
+    explanation for reads that come back withheld from then on, and this is the
+    one moment it is known — after that there is only a stored scope nobody
+    re-reads.
+
+    Measured against the default tier, which is what a read of this connection
+    will actually ask for, rather than against the scopes requested: the request
+    is a wildcard for most providers, and "the server granted less than *" names
+    nothing an operator can act on.
+    """
+    withheld = scopes.unreadable(
+        config.fhir_types_for(config.ResourceTier.US_CORE), granted
+    )
+    if not withheld:
+        return
+    logger.info(
+        "%s granted a narrower scope than requested; %d resource type(s) withheld",
+        provider,
+        len(withheld),
+        **fields(
+            event="auth.scope.narrowed",
+            provider=provider,
+            withheld=",".join(withheld),
+        ),
+    )
 
 
 class CallbackData(BaseModel):
@@ -102,10 +185,11 @@ async def _begin_authorization(
     provider_adapter = provider_for(ehr, iss)
     try:
         smart_config = await provider_adapter.discover(iss)
-    except SMARTDiscoveryError:
+    except SMARTDiscoveryError as exc:
+        _log_upstream_failure(exc, stage="discovery", provider=provider, iss=iss)
         raise HTTPException(
             status_code=502, detail="Could not read the server's SMART configuration"
-        )
+        ) from exc
 
     # Opportunistic sweep so expired anti-CSRF state does not accumulate.
     await delete_expired_states(session)
@@ -276,19 +360,28 @@ async def handle_callback(
         token_set = await provider_adapter.exchange_token(
             smart_config, code, code_verifier=code_verifier
         )
-    except SMARTDiscoveryError:
+    except SMARTDiscoveryError as exc:
+        _log_upstream_failure(exc, stage="discovery", provider=provider, iss=iss)
         raise HTTPException(
             status_code=502, detail="Could not read the server's SMART configuration"
-        )
-    except TokenExchangeError:
+        ) from exc
+    except TokenExchangeError as exc:
         # The provider rejected the exchange — a bad code, expired grant, etc.
-        raise HTTPException(status_code=400, detail="Token exchange failed")
-    except SMARTProviderError:
+        _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
+        raise HTTPException(status_code=400, detail="Token exchange failed") from exc
+    except SMARTProviderError as exc:
         # The server requires a client authentication method we do not support.
-        raise HTTPException(status_code=502, detail="Unsupported provider configuration")
-    except httpx.HTTPError:
+        _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
+        raise HTTPException(
+            status_code=502, detail="Unsupported provider configuration"
+        ) from exc
+    except httpx.HTTPError as exc:
         # Timeout or network failure reaching the provider — an upstream problem.
-        raise HTTPException(status_code=502, detail="Token exchange failed")
+        # The same wording as the refusal above, under a different status, which
+        # is exactly why the two have to be told apart somewhere: one is the
+        # provider saying no, the other is never having reached it.
+        _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
+        raise HTTPException(status_code=502, detail="Token exchange failed") from exc
 
     # A connection is scoped to a patient, so a token with no patient context
     # cannot anchor one. Refuse rather than store it under an empty id, which two
@@ -297,6 +390,8 @@ async def handle_callback(
         raise HTTPException(
             status_code=400, detail="Authorization returned no patient context"
         )
+
+    _log_scope_narrowing(provider, token_set.scope)
 
     # Passing the link through means the connection joins the record the caller
     # already held. Passing None leaves an existing connection on the record it

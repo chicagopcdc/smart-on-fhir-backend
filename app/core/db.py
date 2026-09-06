@@ -128,7 +128,10 @@ async def delete_dead_connections(session: AsyncSession) -> int:
             < now - timedelta(seconds=settings.app_session_ttl_seconds),
         ),
     )
-    unrevivable = ProviderToken.refresh_token.is_(None)
+    # Asked of the column rather than the property: whether a connection has a
+    # refresh token at all is a fact about the row, and reading one here would
+    # decrypt every candidate to answer a question about nulls.
+    unrevivable = ProviderToken.encrypted_refresh_token.is_(None)
     idle = (
         func.coalesce(ProviderToken.last_used_at, ProviderToken.created_at)
         < now - timedelta(days=settings.connection_retention_days)

@@ -129,6 +129,10 @@ celerybeat.pid
 
 # Environments
 .env
+# Any variant too: a .env.local or a hand-made backup holds the same real
+# credentials as .env, and one `git add -A` is all it takes.
+.env.*
+!.env.example
 .venv
 env/
 venv/

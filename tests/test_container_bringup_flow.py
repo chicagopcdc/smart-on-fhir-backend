@@ -20,7 +20,7 @@ import respx
 import yaml
 
 from app.core.config import Settings
-from app.core.crypto import _build_cipher
+from app.core.crypto import build_cipher
 from app.providers import config
 from tests.app_harness import (
     SMART_LAUNCHER,
@@ -83,6 +83,20 @@ def _environment(service: str) -> dict[str, str]:
     }
 
 
+def _clean_checkout_settings(monkeypatch) -> Settings:
+    """Settings as the app service starts with them, and with nothing else in play.
+
+    Only what compose provides. The developer's shell and the ``.env`` this repo
+    happens to be checked out with must not stand in for something the stack is
+    missing, so both are taken out of the way first.
+    """
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
+    for key, value in _environment("app").items():
+        monkeypatch.setenv(key, value)
+    return Settings(_env_file=None)
+
+
 def test_the_compose_environment_satisfies_every_required_setting(monkeypatch):
     # Read off the model rather than listed here, so a setting that loses its
     # default in future joins this check without anyone remembering to add it.
@@ -100,22 +114,14 @@ def test_the_compose_environment_satisfies_every_required_setting(monkeypatch):
     blank = sorted(name for name in required if not environment[name])
     assert not blank, f"the compose app service resolves {blank} to nothing"
 
-    # Only what compose provides. The developer's shell and the .env this repo
-    # happens to be checked out with must not stand in for something the stack
-    # is missing, so both are taken out of the way.
-    for name in Settings.model_fields:
-        monkeypatch.delenv(name.upper(), raising=False)
-    for key, value in environment.items():
-        monkeypatch.setenv(key, value)
-
-    settings = Settings(_env_file=None)
+    settings = _clean_checkout_settings(monkeypatch)
 
     assert settings.database_url == environment["DATABASE_URL"]
 
     # Present is not the same as usable: a typo in the literal key would pass a
     # presence check and only surface when the first token was stored. Built
     # through the application's own path rather than a second reading of it.
-    _build_cipher(settings.token_encryption_key)
+    build_cipher(settings.token_encryption_key)
 
     # And nothing else. Derived from the model so a vendor added later is
     # covered here too: the stack must come up with no registration at all, or
@@ -179,22 +185,25 @@ def test_the_compose_file_uses_no_interpolation_these_tests_cannot_resolve():
 
 @respx.mock
 async def test_a_stack_with_no_vendor_credentials_can_still_authorize(tmp_path, monkeypatch):
-    # The whole registry a fresh stack has. The test above proves the compose
-    # environment sets no vendor credentials, and a provider without a client id
-    # is dropped from the listing and refused at connect, so the launcher is
-    # what is left — reachable because its client id falls back to a literal the
-    # launcher does not validate, and its registration carries no secret.
-    launcher = config.EHR_CONFIGS["SMART_LAUNCHER"]
-    assert launcher["client_id"], "the launcher must not need a registration"
-    assert launcher["client_secret"] is None
-    monkeypatch.setattr(config, "EHR_CONFIGS", {"SMART_LAUNCHER": launcher})
+    # The registry a fresh stack really builds, from the environment compose
+    # starts the app with. Derived rather than assembled here, so a vendor
+    # registered later — or a launcher that stops falling back to a client id the
+    # launcher does not validate — changes what this test authorizes against
+    # instead of leaving it asserting a list that used to be true.
+    registry = config.build_ehr_configs(_clean_checkout_settings(monkeypatch))
+    offerable = [entry["provider"] for entry in config.configured_providers(registry)]
+    assert offerable == ["SMART_LAUNCHER"], (
+        "with no registration anywhere, the launcher should be what is left"
+    )
+    assert registry["SMART_LAUNCHER"]["client_secret"] is None
+    monkeypatch.setattr(config, "EHR_CONFIGS", registry)
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'bringup.db'}"
     async with _app_db(url):
         async with _client() as client:
             offered = await client.get("/providers")
             assert offered.status_code == 200
-            assert [entry["provider"] for entry in offered.json()] == ["SMART_LAUNCHER"]
+            assert [entry["provider"] for entry in offered.json()] == offerable
 
             # Not just listed: authorizing against it has to complete, which is
             # the difference between a stack that starts and one that works.

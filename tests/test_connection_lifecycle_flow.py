@@ -27,6 +27,7 @@ from sqlalchemy import select, update
 from app import main
 from app.auth.models import AppSession, ProviderToken, utcnow
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 from tests.app_harness import (
     CERNER_SANDBOX as CERNER,
     SMART_LAUNCHER as LAUNCHER,
@@ -192,7 +193,7 @@ def test_the_applications_own_log_records_are_not_dropped(monkeypatch):
     monkeypatch.setattr(logging.getLogger("app"), "level", logging.NOTSET)
     assert not logging.getLogger("app.api.auth").isEnabledFor(logging.INFO)
 
-    main.configure_logging()
+    configure_logging()
 
     assert logging.getLogger("app.api.auth").isEnabledFor(logging.INFO)
     assert not logging.getLogger("httpx").isEnabledFor(logging.INFO), (

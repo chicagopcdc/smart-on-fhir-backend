@@ -9,6 +9,7 @@ but never-called ``python-dotenv`` / ``load_dotenv()`` path.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -79,6 +80,11 @@ class Settings(BaseSettings):
     # things: raising it so a user can try a few endpoints in a row must not also
     # raise the throttle standing in front of the token endpoints.
     endpoint_check_rate_limit: str = "20/minute"
+
+    # How a log line is written: "text" is the one a developer reads, "json" one
+    # object per line for a deployment shipping them somewhere that parses. What
+    # may appear in a line is not this setting's business — see app/core/logging.py.
+    log_format: Literal["text", "json"] = "text"
 
     # OAuth client credentials, registered per environment with the EHR. These
     # are secrets and so live in the environment, never in source. Optional

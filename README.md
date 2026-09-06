@@ -43,7 +43,7 @@ curl -X POST localhost:8000/auth/connect \
 curl -X POST localhost:8000/auth/connect \
   -H "Authorization: Bearer $SESSION_ID" \
   -H 'Content-Type: application/json' \
-  -d '{"provider": "CERNER_SANDBOX", "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"}'
+  -d '{"provider": "CERNER_SANDBOX", "iss": "https://fhir-myrecord.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d"}'
 ```
 
 Only the person authorizing both can make that claim, so nothing infers it. A bearer
@@ -78,7 +78,7 @@ Configured out of the box (`app/providers/config.py`):
 |------------------|------------------------------------------|------------|
 | `EPIC` / `EPIC_SANDBOX` | Epic                              | confidential |
 | `SMART_LAUNCHER` | Public SMART App Launcher                | public (PKCE) |
-| `CERNER_SANDBOX` | Cerner / Oracle Health sandbox           | public (PKCE) |
+| `CERNER_SANDBOX` | Cerner / Oracle Health sandbox           | confidential |
 
 A standalone launch against the public SMART Launcher encodes its launch context
 in the FHIR base URL (`…/v/r4/sim/<opts>/fhir`), so `SMART_LAUNCHER` allows any
@@ -385,8 +385,9 @@ Settings are read from the environment, and from `.env` in local development.
 | `EPIC_SANDBOX_CLIENT_ID`, `EPIC_SANDBOX_CLIENT_SECRET` | no | Client credentials for the Epic sandbox. Register an app at https://fhir.epic.com to get them. |
 | `EPIC_CLIENT_ID`, `EPIC_CLIENT_SECRET` | no | Client credentials for the production Epic provider. |
 | `EPIC_ISSUER` | no | FHIR base URL of the production Epic deployment. Authorization for the `EPIC` provider is only allowed against this issuer. |
-| `CERNER_CLIENT_ID` | no | Client id for the Cerner / Oracle Health sandbox (a public client; PKCE stands in for a secret). Unset leaves the provider rejecting every request. |
+| `CERNER_CLIENT_ID`, `CERNER_CLIENT_SECRET` | no | Client credentials for the Cerner / Oracle Health sandbox, which is registered as a confidential client. Oracle issues the secret through a Cerner Central system account, reached from the application's page in code Console. Leave either unset and the provider rejects every request, and `GET /providers` omits it. |
 | `SMART_LAUNCHER_CLIENT_ID` | no | Client id for the public SMART App Launcher. The launcher does not validate it, so a default is used when unset. |
+| `LOG_FORMAT` | no | `text` (the default) writes the line a developer reads; `json` writes one object per line for a deployment shipping logs somewhere that parses them. Neither decides what may appear in a line — see [Logs](#logs). |
 
 Generate a `TOKEN_ENCRYPTION_KEY`:
 
@@ -419,6 +420,10 @@ except `DATABASE_URL`, which the stack sets for itself.
 
 `docker compose down` stops the stack and keeps the data. `docker compose down -v`
 throws the database away, and the next `up` migrates a fresh one.
+
+`up` builds the image the first time and then reuses it, so after changing code
+run `docker compose up --build`. Without it the stack comes up healthy on the
+previous build, which looks exactly like the change not working.
 
 Five variables tune the stack itself, all optional and all with defaults:
 
@@ -485,6 +490,127 @@ poetry run uvicorn app.main:app --reload
 
 The API is now at http://localhost:8000, with interactive docs at http://localhost:8000/docs.
 
+## Deploying it
+
+Two things this backend does not do for itself, both of which a deployment has to.
+
+### TLS, and where it terminates
+
+Nothing here serves HTTPS or redirects to it. uvicorn is started on plain HTTP
+and is meant to sit behind a reverse proxy — an ingress controller, a load
+balancer, nginx — that terminates TLS and forwards to it on the private network.
+That is the ordinary arrangement and the one the container is built for; it is
+not an omission, but it is only safe if the proxy is actually there.
+
+It has to be, because the traffic is not optional to protect. A session bearer
+travels in an `Authorization` header on every read, the OAuth `code` travels in
+the callback, and the responses are a patient's chart. So:
+
+- Terminate TLS at the proxy and refuse plain HTTP there, rather than serving
+  both and hoping.
+- Publish only the proxy. The compose file publishes the API on all interfaces
+  (`APP_PORT`, default 8000) because that is what a local run needs; a deployment
+  should bind it to the proxy's network instead.
+- `FRONTEND_HOSTNAME` and `CORS_ALLOWED_ORIGINS` are `https://` URLs in any real
+  deployment. The first is what each provider's `redirect_uri` is built from, and
+  an EHR will reject a redirect that does not match what was registered.
+
+Postgres is already bound to loopback by the compose file
+(`127.0.0.1:${POSTGRES_PORT}`), so it is reachable for `psql` on the host and from
+nowhere else.
+
+### What the proxy has to forward
+
+Once there is a proxy in front, every request arrives from the proxy's address.
+The rate limiter keys on the client address, so without something to tell it
+otherwise, every user in the world shares one bucket — the throttle stops being
+per-client and becomes a cap on the whole deployment.
+
+uvicorn already handles this and needs one thing set. It runs
+`ProxyHeadersMiddleware` by default, which rewrites the client address from
+`X-Forwarded-For` — but only for requests whose immediate peer it has been told
+to trust, and that list defaults to `127.0.0.1`. A proxy in another container or
+on another host is not on it, so its headers are ignored and the limiter goes on
+keying by the proxy.
+
+Set `FORWARDED_ALLOW_IPS` to the proxy's address:
+
+```yaml
+environment:
+  FORWARDED_ALLOW_IPS: "10.0.1.7"     # the proxy, and nothing else
+```
+
+It is read by uvicorn rather than by this application, so it belongs in the
+container's environment and is not in `.env.example` with the application's own
+settings.
+
+Set it to the address you actually have, and never to `*`. `X-Forwarded-For` is
+a request header like any other: trust it from an untrusted peer and any caller
+can claim any address, which hands them an unlimited rate limit and makes every
+log line's client field fiction. Trusting only the proxy is what makes the header
+worth reading, because the proxy is the one thing that overwrites it.
+
+Two limits worth knowing before scaling out, both consequences of the same
+single-process design the image ships:
+
+- Rate limiting counts in memory, so *n* workers or replicas mean *n* times the
+  configured limit. A shared counter is what fixes that properly.
+- A refresh is coalesced per process, so two replicas can refresh the same
+  connection at once. Both survive it — the rotated token is stored under a row
+  lock — but one refresh is wasted.
+
+## Logs
+
+Every line is written by one handler, configured in `app/core/logging.py` —
+uvicorn's startup and access lines included, which it takes over on the way up so
+that `LOG_FORMAT=json` gives a stream that parses all the way through rather than
+one that is only mostly JSON. `LOG_FORMAT=text` gives the line a developer reads
+and `LOG_FORMAT=json` gives one object per line; both carry the same fields.
+
+```
+2026-08-29T21:14:07.881+00:00 WARNING [app.api.auth] Upstream discovery failed for
+  CERNER_SANDBOX: unreachable request_id=9f2c…  event=auth.discovery.failed
+  provider=CERNER_SANDBOX iss=https://fhir-myrecord.cerner.com/r4/…  reason=unreachable
+  status=403 exception=DiscoveryUnreachableError
+```
+
+`request_id` is on every line written while serving one request, and on the
+response as `X-Request-ID`, so a caller reporting a failure can quote the id and
+have it found. A request that arrives with one of its own keeps it, provided it
+is short and alphanumeric.
+
+**The one to watch after connecting a new server** is `auth.scope.narrowed`. It
+says the server granted less than was asked for, and names the resource types it
+withheld. A read of that connection will not request those types at all — asking
+for a type a grant excludes buys a refusal and nothing else — so they come back
+as `"was not granted access"` with a null `statusCode`, and the connection reads
+`degraded`. That is the intended behaviour for a genuine narrowing, and it is
+also what you would see if a server understated what it granted, so a provider
+returning less data than expected is worth checking against this line first.
+
+**What is never written.** A log line names what happened and where, never whose
+it was. Access and refresh tokens, `Authorization` values, session ids, an OAuth
+`state` or `code`, provider-issued patient ids, and resource content do not appear
+in one. Our own `pat_…` record ids do: this application mints them, no server has
+ever seen one, and without them a line naming a failure could not be tied to the
+record it happened on.
+
+The rule that keeps this true is that sensitive values are not put into log lines
+in the first place — including exception *messages*, which are the trap, since a
+validation error quotes the field value that failed and an HTTP error quotes the
+URL. A failure is logged as its type and the frames it came through instead.
+
+Two mechanisms enforce it rather than leave it to habit, since this application
+does not write every line its handler receives. Values are redacted on the way
+into a line: bearer prefixes, JWTs, Fernet ciphertext and URL query strings are
+masked wherever they appear, and any field whose name says it is sensitive is
+masked whatever its value looks like. And the libraries whose output could not be
+redacted in principle are silenced by level — a database driver logs the
+parameters bound to a statement, and httpx logs URLs with a patient id in the
+path, neither of which has a shape to match on. `tests/test_logging_redaction.py`
+drives a whole record through the API with the real handler attached and checks
+that nothing from it came out.
+
 ## Endpoints
 
 Full request and response schemas, with examples, are at `/docs`.
@@ -502,7 +628,10 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/health` | Whether the service and its database are up. `503` when the database cannot be reached; this is what the container healthcheck reads. |
 
 Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
-`Retry-After`. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
+`Retry-After`. Two responses are not refusals and do not: `GET /health` reports its
+own state as a `HealthResponse` whether it is `200` or `503`, and a request whose
+shape is wrong gets FastAPI's own `422`, whose `detail` is a list of the fields at
+fault rather than a sentence. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
 `FHIR_RATE_LIMIT`, `ENDPOINT_CHECK_RATE_LIMIT`) and can be turned off for local
 single-user runs.
 

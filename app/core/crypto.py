@@ -22,10 +22,12 @@ class TokenEncryptionError(RuntimeError):
     """Encryption or decryption failed (missing/invalid key, or corrupt data)."""
 
 
-# Cached by the key material itself, so a changed key string can never serve a
-# stale cipher (matters when tests reconfigure keys at runtime).
+# Public because a caller with a key string but no configured process — a check on
+# the environment a clean checkout gets — needs to know whether that string builds
+# a cipher at all. Cached by the key material itself, so a changed key can never
+# serve a stale cipher (which matters when tests reconfigure keys at runtime).
 @lru_cache
-def _build_cipher(keys_csv: str) -> MultiFernet:
+def build_cipher(keys_csv: str) -> MultiFernet:
     keys = [key.strip() for key in keys_csv.split(",") if key.strip()]
     try:
         return MultiFernet([Fernet(key.encode("utf-8")) for key in keys])
@@ -36,7 +38,7 @@ def _build_cipher(keys_csv: str) -> MultiFernet:
 
 
 def _cipher() -> MultiFernet:
-    return _build_cipher(get_settings().token_encryption_key)
+    return build_cipher(get_settings().token_encryption_key)
 
 
 def encrypt(plaintext: str) -> str:
