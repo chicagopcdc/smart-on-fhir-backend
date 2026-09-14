@@ -38,6 +38,49 @@ class Settings(BaseSettings):
     # Lifetime of an OAuth state row before the TTL sweep removes it.
     oauth_state_ttl_seconds: int = 600
 
+    # --- who the user is, as opposed to which records they connected ---------
+    #
+    # The identity provider users sign in with, as a plain OIDC relying party.
+    # Okta and Google are both ordinary OIDC providers, so which one a
+    # deployment uses is a matter of configuration rather than of code:
+    #
+    #   Okta    OIDC_ISSUER=https://<org>.okta.com/oauth2/default
+    #   Google  OIDC_ISSUER=https://accounts.google.com
+    #
+    # Everything else — the authorization, token and JWKS endpoints — is read
+    # from the issuer's ``.well-known/openid-configuration`` at runtime, the
+    # same way SMART endpoints are, so a provider that moves one is followed
+    # rather than hardcoded.
+    #
+    # All three are optional because login is an opt-in layer: a deployment that
+    # sets none of them keeps the anonymous connect flow it had before.
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+
+    # The scopes requested at login. ``openid`` is what makes it an OIDC request
+    # at all; the other two are what populate the user's email and name. Nothing
+    # here grants access to health data — that is the SMART flow's business.
+    oidc_scopes: str = "openid profile email"
+
+    # Lifetime of a login state row — an in-flight login — before the TTL sweep
+    # removes it. Separate from oauth_state_ttl_seconds because the two bound
+    # different journeys: an EHR login can involve MFA and a consent screen, so
+    # tightening one must not silently tighten the other.
+    login_state_ttl_seconds: int = 600
+
+    # How much clock skew to tolerate when checking an ID token's exp/iat. The
+    # IdP and this server keep their own clocks, and a few seconds of drift is
+    # ordinary; without leeway it reads as a token from the future.
+    oidc_clock_skew_seconds: int = 60
+
+    # Whether connecting a provider requires being signed in. Off by default so
+    # adding login does not break a frontend that has not adopted it yet. Turn
+    # it on once the frontend signs users in, and an anonymous record can no
+    # longer be created — which is what makes a record reliably reachable again
+    # on the next login.
+    require_user_login: bool = False
+
     # Lifetime of an app session (the bearer token the frontend uses to read
     # resources after authorizing) before it is swept and the caller must
     # re-authorize. Default one hour.
@@ -112,6 +155,28 @@ class Settings(BaseSettings):
     # allowlist the issuer a caller may start an authorization against. Unset
     # leaves that provider with no allowed issuer, so it rejects every request.
     epic_issuer: str | None = None
+
+    @property
+    def user_login_configured(self) -> bool:
+        """Whether this deployment has an identity provider to sign users in with.
+
+        A client secret is deliberately not required: Okta and Google both issue
+        public clients for browser applications, which authenticate with PKCE
+        instead. An issuer and a client id are the two things no login can be
+        built without.
+        """
+        return bool(self.oidc_issuer and self.oidc_client_id)
+
+    @property
+    def oidc_redirect_uri(self) -> str:
+        """Where the identity provider sends the user back after signing in.
+
+        Built from the frontend host for the same reason the SMART redirect is:
+        the browser lands on the frontend, which posts the code back here. It
+        must match the redirect URI registered with the IdP exactly, so a
+        deployment that changes FRONTEND_HOSTNAME has to update it there too.
+        """
+        return self.frontend_hostname.rstrip("/") + "/auth/login/callback"
 
     @property
     def resolved_cors_origins(self) -> list[str]:

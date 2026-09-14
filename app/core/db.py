@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import (
@@ -21,14 +22,22 @@ from sqlalchemy.ext.asyncio import (
 
 from app.auth.models import (
     AppSession,
+    LoginState,
     OAuthState,
     ProviderToken,
+    User,
     expiry_from,
     new_patient_id,
     utcnow,
 )
 from app.providers.models import TokenSet
 from app.core.config import get_settings
+
+if TYPE_CHECKING:  # pragma: no cover
+    # Only for the annotation. Imported lazily so the persistence layer keeps no
+    # runtime dependency on the identity provider client, which knows about it
+    # and not the other way round.
+    from app.auth.oidc import Identity
 
 # One engine per process. ``pool_pre_ping`` checks a connection before handing it
 # out, so a Postgres restart or a dropped idle connection surfaces as a clean
@@ -67,6 +76,55 @@ async def delete_expired_states(session: AsyncSession) -> int:
 async def delete_expired_sessions(session: AsyncSession) -> int:
     """Stage deletion of app session rows past their TTL; the caller commits."""
     return await _delete_expired(session, AppSession)
+
+
+async def delete_expired_login_states(session: AsyncSession) -> int:
+    """Stage deletion of in-flight logins past their TTL; the caller commits."""
+    return await _delete_expired(session, LoginState)
+
+
+async def upsert_user(session: AsyncSession, identity: "Identity") -> User:
+    """Find the account this identity names, creating it on a first sign-in.
+
+    Matched on ``(issuer, subject)``, never on email — see ``User`` for why an
+    address cannot decide who someone is. The email and name on the row are
+    refreshed from every sign-in, so a user who changes either at the identity
+    provider sees the new one here rather than whatever was true when they first
+    arrived.
+
+    The caller commits. ``last_login_at`` is stamped here because signing in is
+    the only thing that happens to this row, so there is no reading of it to
+    confuse with a use of it.
+    """
+    result = await session.execute(
+        select(User).where(
+            User.issuer == identity.issuer, User.subject == identity.subject
+        )
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(issuer=identity.issuer, subject=identity.subject)
+        session.add(user)
+
+    user.email = identity.email
+    user.display_name = identity.display_name
+    user.last_login_at = utcnow()
+
+    # Flushed before returning so the row has its id. The id is a column default,
+    # which SQLAlchemy applies on the way to the database and not at construction
+    # — so a caller that reads ``user.id`` off a brand new account without this
+    # gets None, and the session it mints with it is anchored to nobody.
+    await session.flush()
+    return user
+
+
+async def user_for_session(
+    session: AsyncSession, app_session: AppSession
+) -> User | None:
+    """The account behind a session, where it came from a sign-in."""
+    if app_session.user_id is None:
+        return None
+    return await session.get(User, app_session.user_id)
 
 
 async def delete_dead_connections(session: AsyncSession) -> int:
@@ -108,10 +166,19 @@ async def delete_dead_connections(session: AsyncSession) -> int:
     settings = get_settings()
     now = utcnow()
 
+    # A live session pointing at the record, in either of the two ways one can:
+    # named on the session, or reached through the account that owns it. The
+    # second is not an optimization — a signed-in caller's session carries no
+    # patient_id at all, so without it every connection an account owns would
+    # look unreachable the moment it was made.
+    held_directly = AppSession.patient_id == ProviderToken.patient_id
+    held_by_account = AppSession.user_id.in_(
+        select(User.id).where(User.patient_id == ProviderToken.patient_id)
+    )
     reachable = (
         select(AppSession.session_id)
         .where(
-            AppSession.patient_id == ProviderToken.patient_id,
+            or_(held_directly, held_by_account),
             AppSession.expires_at > now,
         )
         .exists()
@@ -185,6 +252,17 @@ async def delete_connections(
     if left == 0:
         await session.execute(
             delete(AppSession).where(AppSession.patient_id == patient_id)
+        )
+        # The record is gone, so no account still owns it. Left set, the next
+        # provider that account connected would join a record id nothing else
+        # refers to, and the account would be pointing at an empty record in the
+        # meantime. Cleared, the next connection anchors a fresh one.
+        #
+        # A signed-in caller's own session survives this: it names the account,
+        # not the record, so they stay logged in with nothing connected — which
+        # is the state they were in before they connected anything.
+        await session.execute(
+            update(User).where(User.patient_id == patient_id).values(patient_id=None)
         )
     await session.commit()
     return left

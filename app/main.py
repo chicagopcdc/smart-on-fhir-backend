@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
-from app.api import auth, deps, health, patients, providers
+from app.api import auth, deps, health, login, patients, providers
 from app.api.middleware import REQUEST_ID_HEADER, RequestContext
 from app.core.config import get_settings
 from app.core.db import engine
@@ -29,6 +29,10 @@ summary, so nothing the server sent is lost.
 """
 
 TAGS = [
+    {
+        "name": "authentication",
+        "description": "Sign a user in and out, and report who a session belongs to.",
+    },
     {
         "name": "authorization",
         "description": "Connect a patient to an EHR and exchange the result for a session.",
@@ -91,6 +95,7 @@ app.add_middleware(
     expose_headers=[REQUEST_ID_HEADER],
 )
 
+app.include_router(login.router)
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(providers.router)

@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     RATE_LIMITED,
+    Principal,
     auth_rate_limit,
     fhir_rate_limit,
-    get_current_session,
+    get_current_principal,
     limiter,
 )
 from app.api.schemas import (
@@ -35,7 +36,7 @@ from app.api.schemas import (
     refusal,
 )
 from app.auth import tokens
-from app.auth.models import AppSession, ProviderToken, utcnow
+from app.auth.models import ProviderToken, utcnow
 from app.core.db import (
     connections_for_patient,
     delete_connections,
@@ -67,15 +68,17 @@ UNAUTHORIZED = refusal("Missing, invalid, or expired session")
 
 async def _authorized_connections(
     patient_id: str,
-    app_session: AppSession,
+    principal: Principal,
     session: AsyncSession,
     provider: str | None = None,
 ) -> list[ProviderToken]:
-    """The connections under ``patient_id``, once the session is entitled to it.
+    """The connections under ``patient_id``, once the caller is entitled to it.
 
-    A record the session does not hold is a 404 rather than a 403: confirming an
+    A record the caller does not hold is a 404 rather than a 403: confirming an
     id exists is itself a leak. A record with no connections left answers the
-    same, since a record exists only for as long as something hangs off it.
+    same, since a record exists only for as long as something hangs off it. So
+    does a signed-in caller who has connected nothing yet, whose record is None
+    and therefore matches no id anyone could name.
 
     Reaching the record is what keeps it, so this is where that is recorded —
     across every connection, before ``provider`` narrows the result, since
@@ -83,7 +86,7 @@ async def _authorized_connections(
     filter itself is applied after existence is settled, so one matching nothing
     comes back empty rather than as a missing record.
     """
-    if patient_id != app_session.patient_id:
+    if principal.patient_id is None or patient_id != principal.patient_id:
         raise HTTPException(status_code=404, detail="No such patient record")
 
     connections = await connections_for_patient(session, patient_id)
@@ -317,7 +320,7 @@ async def read_resources(
         "the record.",
         examples=["EPIC_SANDBOX"],
     ),
-    app_session: AppSession = Depends(get_current_session),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ):
     """Read the patient's record, as normalized resources, one entry per connection.
@@ -331,7 +334,7 @@ async def read_resources(
     merged view.
     """
     connections = await _authorized_connections(
-        patient_id, app_session, session, provider
+        patient_id, principal, session, provider
     )
 
     resource_types = (
@@ -374,7 +377,7 @@ async def read_summary(
         description="Summarize only this connection.",
         examples=["EPIC_SANDBOX"],
     ),
-    app_session: AppSession = Depends(get_current_session),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ):
     """Summarize the patient's chart across every provider they have connected.
@@ -388,7 +391,7 @@ async def read_summary(
     the chart comes back as a normal 200.
     """
     connections = await _authorized_connections(
-        patient_id, app_session, session, provider
+        patient_id, principal, session, provider
     )
 
     reads = await _read_all(connections, config.resources_named(summary.SUMMARY_RESOURCES))
@@ -429,7 +432,7 @@ async def disconnect_provider(
         description="The connection to end, as it appears on the record.",
         examples=["EPIC_SANDBOX"],
     ),
-    app_session: AppSession = Depends(get_current_session),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ):
     """End one provider's connection to this record, and revoke it at the EHR.
@@ -448,7 +451,7 @@ async def disconnect_provider(
     held it stops resolving.
     """
     connections = await _authorized_connections(
-        patient_id, app_session, session, provider
+        patient_id, principal, session, provider
     )
     if not connections:
         raise HTTPException(status_code=404, detail="No such connection on this record")
@@ -521,14 +524,25 @@ async def get_all_resource(
         description="Which slice of the record to read: the US Core set a certified "
         "server must support, or every configured resource type",
     ),
-    app_session: AppSession = Depends(get_current_session),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ):
     # This endpoint predates patient records, so it reads the one connection the
     # session was issued for rather than everything the record holds. Matched on
     # the full identity, so it stays the same connection even once the record has
     # several.
-    connections = await connections_for_patient(session, app_session.patient_id)
+    #
+    # It also predates signing in, and a session minted by a login names no
+    # connection to read — there is nothing for the identity match below to match
+    # against. That answers the same 404 as a session whose connection has since
+    # been removed, which is the honest answer for a route defined as "the
+    # connection this session was issued for": there was not one. Anyone signed
+    # in has the record routes, which read everything this would have and more.
+    app_session = principal.session
+    if principal.patient_id is None or app_session.provider is None:
+        return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
+
+    connections = await connections_for_patient(session, principal.patient_id)
     token_row = next(
         (
             token
