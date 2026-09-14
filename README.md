@@ -149,8 +149,9 @@ curl -X POST localhost:8000/auth/connect \
   -d '{"provider": "EXAMPLE_HEALTH", "iss": "https://fhir.example.org/r4"}'
 ```
 
-`GET /providers` lists the new server as soon as it has a `client_id`, so the
-frontend needs no change. A provider without one is omitted there and answers
+`GET /providers` lists the new server once it has both a `client_id` **and** at
+least one entry in `allowed_issuers`; both are required and a provider missing
+either is silently omitted. A provider without a `client_id` also answers
 `503 Provider is not configured` at connect, which is what an unexported or
 misspelled variable looks like; an `iss` outside `allowed_issuers` is
 `400 Issuer not allowed for this provider`.
