@@ -87,16 +87,80 @@ plain FHIR base and keep exact-match allowlisting.
 
 ### Adding a server
 
-No code change is needed — add one entry to `EHR_CONFIGS`:
+Adding a server is a configuration change rather than new logic: no adapter to
+write and no vendor branch, because one discovery-driven provider serves them all
+and reads each server's endpoints, PKCE support and client-auth method from the
+server itself. That configuration lives in source: two files, plus the
+credentials in `.env`.
 
-1. Register the app with the EHR and put its credentials in `.env` (a public
-   client has a `client_id` and no secret; PKCE stands in for the secret).
-2. Add an `EHR_CONFIGS` row with the `client_id`/`client_secret`, the shared
-   `redirect_uri`, the `scopes` to request, and an `allowed_issuers` list pinning
-   the FHIR base URL(s) the app may authorize against.
-3. Start the flow: `POST /auth/connect` with `{"provider": "<KEY>", "iss": "<FHIR base URL>"}`.
+Say you are adding Example Health, whose FHIR base URL is
+`https://fhir.example.org/r4`.
 
-Endpoints, PKCE, and the client-auth method all come from discovery.
+**1. Register the app with the EHR.** The redirect URI you register must be
+`FRONTEND_HOSTNAME` plus `/auth/callback` — `http://localhost:3000/auth/callback`
+unless you have changed it. You get back a `client_id`, and a `client_secret` if
+the EHR registered you as a confidential client.
+
+**2. Declare the credentials** on `Settings` in `app/core/config.py`, beside the
+Epic and Cerner ones:
+
+```python
+example_health_client_id: str | None = None
+example_health_client_secret: str | None = None
+```
+
+Each field reads the environment variable of the same name in upper case, so these
+two are `EXAMPLE_HEALTH_CLIENT_ID` and `EXAMPLE_HEALTH_CLIENT_SECRET`. The field is
+what makes the variable mean anything: an unrecognised environment variable is
+ignored, so a value in `.env` with nothing to land in is discarded without a word.
+
+**3. Add the row** to `build_ehr_configs` in `app/providers/config.py`:
+
+```python
+"EXAMPLE_HEALTH": {
+    "client_id": settings.example_health_client_id,
+    "client_secret": settings.example_health_client_secret,
+    "redirect_uri": redirect_uri,
+    "scopes": _DEFAULT_SCOPES,
+    "allowed_issuers": ["https://fhir.example.org/r4"],
+},
+```
+
+A public client sets `"client_secret": None` and declares no secret setting. PKCE
+stands in for the secret, and turns on when the server advertises S256.
+
+`allowed_issuers` is what an incoming `iss` is checked against before any request
+leaves the process, so list the FHIR base URLs exactly. The `allowed_issuer_prefixes`
+on `SMART_LAUNCHER` is for a server whose base URL varies, and is refused at import
+for any provider holding a secret, so a secret cannot reach a host a prefix covers.
+
+**4. Put the values in `.env`**, and document the keys in `.env.example`:
+
+```bash
+EXAMPLE_HEALTH_CLIENT_ID=a1b2c3d4-5e6f-7890-abcd-ef1234567890
+EXAMPLE_HEALTH_CLIENT_SECRET=<the secret the EHR issued>
+```
+
+**5. Start the flow:**
+
+```bash
+curl -X POST localhost:8000/auth/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "EXAMPLE_HEALTH", "iss": "https://fhir.example.org/r4"}'
+```
+
+`GET /providers` lists the new server once it has both a `client_id` **and** at
+least one entry in `allowed_issuers`; both are required and a provider missing
+either is silently omitted. A provider without a `client_id` also answers
+`503 Provider is not configured` at connect, which is what an unexported or
+misspelled variable looks like; an `iss` outside `allowed_issuers` is
+`400 Issuer not allowed for this provider`.
+
+`_DEFAULT_SCOPES` asks for `patient/*.read`. A server that enumerates the scopes it
+supports rather than granting a wildcard needs them listed one per resource type
+instead, as `_CERNER_SCOPES` does. A server that grants less than was asked for
+still connects, and names the withheld types once in an `auth.scope.narrowed` log
+line; see [Logs](#logs).
 
 ### Reading resources
 
@@ -388,6 +452,9 @@ Settings are read from the environment, and from `.env` in local development.
 | `CERNER_CLIENT_ID`, `CERNER_CLIENT_SECRET` | no | Client credentials for the Cerner / Oracle Health sandbox, which is registered as a confidential client. Oracle issues the secret through a Cerner Central system account, reached from the application's page in code Console. Leave either unset and the provider rejects every request, and `GET /providers` omits it. |
 | `SMART_LAUNCHER_CLIENT_ID` | no | Client id for the public SMART App Launcher. The launcher does not validate it, so a default is used when unset. |
 | `LOG_FORMAT` | no | `text` (the default) writes the line a developer reads; `json` writes one object per line for a deployment shipping logs somewhere that parses them. Neither decides what may appear in a line — see [Logs](#logs). |
+
+A provider you add yourself brings its own credential keys — see
+[Adding a server](#adding-a-server).
 
 Generate a `TOKEN_ENCRYPTION_KEY`:
 
