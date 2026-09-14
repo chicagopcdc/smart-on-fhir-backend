@@ -21,6 +21,12 @@ os.environ["EPIC_SANDBOX_CLIENT_SECRET"] = "test-sandbox-client-secret"
 os.environ["CERNER_CLIENT_ID"] = "test-cerner-client-id"
 os.environ["CERNER_CLIENT_SECRET"] = "test-cerner-client-secret"
 os.environ["FRONTEND_HOSTNAME"] = "http://localhost:3000"
+# The fake identity provider in tests/idp.py. Configured for the whole suite so
+# that the login routes are reachable; REQUIRE_USER_LOGIN stays at its default
+# of false, so the anonymous connect flow the other tests drive is unaffected.
+os.environ["OIDC_ISSUER"] = "https://idp.test/oauth2/default"
+os.environ["OIDC_CLIENT_ID"] = "test-oidc-client-id"
+os.environ["OIDC_CLIENT_SECRET"] = "test-oidc-client-secret"
 # Throttling off by default so request-heavy flow tests are never rate limited;
 # the one rate-limit test re-enables it for its own duration.
 os.environ["RATE_LIMIT_ENABLED"] = "false"
@@ -156,6 +162,21 @@ def _reset_discovery_cache():
     registry.discovery.clear()
     yield
     registry.discovery.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_oidc_client():
+    """Rebuild the process-wide OIDC client per test.
+
+    It caches both the identity provider's configuration and its signing keys,
+    and it is built from settings on first use — so a test that changes either
+    would otherwise be answered from whatever the previous one left behind.
+    """
+    from app.auth import oidc
+
+    oidc.reset_client()
+    yield
+    oidc.reset_client()
 
 
 @pytest.fixture
