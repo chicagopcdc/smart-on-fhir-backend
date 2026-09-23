@@ -6,11 +6,16 @@ about FHIR, and the tokens it handles are never used to read anything: an ID
 token is read once, for the ``sub`` inside it, and then discarded.
 
 There is one implementation rather than one per vendor, for the same reason
-``app/providers/generic.py`` has one for SMART servers: Okta and Google are both
-ordinary OIDC providers, so everything that differs between them — where to send
-the user, where to exchange the code, which keys sign the tokens — is published
-at the issuer's ``.well-known/openid-configuration`` and read at runtime. Which
-one a deployment uses is then a matter of setting ``OIDC_ISSUER``.
+``app/providers/generic.py`` has one for SMART servers: Okta, Keycloak and
+Google are all ordinary OIDC providers, so everything that differs between them
+— where to send the user, where to exchange the code, which keys sign the tokens
+— is published at the issuer's ``.well-known/openid-configuration`` and read at
+runtime. Which one a deployment uses is then a matter of setting ``OIDC_ISSUER``;
+for Keycloak that is a realm's URL, ``https://<host>/realms/<realm>``.
+
+Where a vendor differs in something *not* published there, it is handled by
+reading what is published more generously rather than by branching on who sent
+it — see the display name below.
 
 References: OpenID Connect Core 1.0 (§2 ID token, §3.1 authorization code flow,
 §3.1.3.7 ID token validation), OpenID Connect Discovery 1.0, RFC 7636 (PKCE).
@@ -221,8 +226,11 @@ class OIDCClient:
         PKCE is always sent rather than conditional on what the provider
         advertises, which is the opposite of the SMART path. There the servers
         are someone else's and vary; here the issuer is one this deployment
-        chose, Okta and Google both support S256, and a provider that ignores the
-        challenge is no worse off for having been sent one.
+        chose, Okta, Keycloak and Google all support S256, and a provider that
+        ignores the challenge is no worse off for having been sent one. It also
+        means a Keycloak client registered with ``pkce.code.challenge.method``
+        set to S256 — which makes Keycloak *refuse* a request without a
+        challenge — needs nothing turned on at this end.
         """
         params = {
             "response_type": "code",
@@ -247,10 +255,10 @@ class OIDCClient:
             "code_verifier": code_verifier,
             "client_id": self.client_id,
         }
-        # A confidential client authenticates with Basic, which is what both Okta
-        # and Google accept and what RFC 6749 §2.3.1 prefers. A public client has
-        # no secret and leans on PKCE, which is why client_id is in the body
-        # either way.
+        # A confidential client authenticates with Basic, which is what Okta,
+        # Keycloak and Google all accept and what RFC 6749 §2.3.1 prefers. A
+        # public client has no secret and leans on PKCE, which is why client_id
+        # is in the body either way.
         auth = (self.client_id, self.client_secret) if self.client_secret else None
 
         try:
@@ -338,7 +346,16 @@ class OIDCClient:
             subject=str(subject),
             email=_optional_str(claims.get("email")),
             email_verified=bool(claims.get("email_verified", False)),
-            display_name=_optional_str(claims.get("name")),
+            # ``name`` first, then the username the provider knows them by.
+            # Keycloak emits ``name`` only for an account that has a first and
+            # last name on it — its user profile can be configured not to
+            # require either, and an account arriving from LDAP or a brokered
+            # identity often has neither — while ``preferred_username`` is
+            # always there. Falling back is the difference between a name in the
+            # corner of the page and a blank one. Still not an identity: see
+            # ``User`` for why only (issuer, subject) is.
+            display_name=_optional_str(claims.get("name"))
+            or _optional_str(claims.get("preferred_username")),
         )
 
     def _signing_key(self, config: OIDCConfiguration, id_token: str):
@@ -369,8 +386,18 @@ class OIDCClient:
         if id_token:
             params["id_token_hint"] = id_token
         else:
-            # Okta accepts this in place of a hint; providers that do not simply
-            # ignore it and ask the user which session to end.
+            # A hint is never available here: the ID token is read once for the
+            # subject inside it and discarded, so nothing has kept one by the
+            # time someone signs out. ``client_id`` is what stands in its place.
+            # Okta accepts it; Keycloak (since 18) *requires* one or the other
+            # alongside a post-logout redirect and answers "Invalid redirect
+            # uri" without it; providers that want neither ignore it and ask the
+            # user which session to end.
+            #
+            # Keycloak also validates the redirect against the client's own
+            # post-logout list, which defaults to the sign-in redirect URIs —
+            # and FRONTEND_HOSTNAME is not one of those. A Keycloak client
+            # therefore has to register it explicitly; see the README.
             params["client_id"] = self.client_id
         return f"{config.end_session_endpoint}?{urlencode(params)}"
 
