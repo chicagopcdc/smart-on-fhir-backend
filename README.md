@@ -161,6 +161,12 @@ sign-in redirect URIs, which `FRONTEND_HOSTNAME` is not one of, so sign-out answ
 because ending the session here never depended on reaching Keycloak. Requiring `S256`
 is safe because PKCE is always sent.
 
+Keycloak then shows a *Do you want to log out?* page before taking that redirect. That
+is not a misconfiguration: it skips the question only for a request carrying an
+`id_token_hint`, and nothing here keeps an ID token — it is read once for the subject
+inside it and discarded, which is the point. Storing one to smooth over a confirmation
+screen would be keeping a credential for a cosmetic reason.
+
 Login is **off unless configured**. With `OIDC_ISSUER` unset the login routes answer
 `503`, `GET /auth/providers` reports `loginEnabled: false`, and connecting works
 anonymously exactly as it did before. Set `REQUIRE_USER_LOGIN=true` once the frontend
