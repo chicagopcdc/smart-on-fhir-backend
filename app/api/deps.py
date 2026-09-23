@@ -11,15 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Request, Response
-from fastapi.exception_handlers import http_exception_handler
+from fastapi import Depends, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import refusal
+from app.api.errors import APIError, ErrorCode, error_response, refusal
 from app.auth.models import AppSession, User
 from app.core.config import get_settings
 from app.core.db import get_session, user_for_session
@@ -53,19 +52,20 @@ def endpoint_check_rate_limit() -> str:
 # limiter so a route that adds the decorator has the matching documentation to
 # hand, rather than reaching into another router for it.
 RATE_LIMITED = refusal(
-    "Too many requests from this client. `Retry-After` says when to come back."
+    "Too many requests from this client. `Retry-After` says when to come back.",
+    ErrorCode.RATE_LIMITED,
 )
 
 
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
     """Add ``Retry-After`` to a throttled request's refusal.
 
-    This exists for the header, not for the body. ``RateLimitExceeded`` is
-    already an ``HTTPException``, so FastAPI would render it as ``{"detail": …}``
-    on its own; it is slowapi's *handler* that answers ``{"error": …}``, and
+    This exists for the header, not for the body. slowapi ships its own handler
+    for ``RateLimitExceeded`` and it answers a shape of its own invention;
     registering this one in its place is what keeps 429 from being the single
-    status a caller has to special-case. Rendering is delegated back to FastAPI
-    rather than rebuilt, so there is one definition of what a refusal looks like.
+    status a caller has to special-case. The body is rendered through
+    ``app.api.errors`` like every other refusal rather than rebuilt here, so
+    there is one definition of what one looks like.
 
     The window comes from the limit itself rather than from slowapi's
     ``headers_enabled``. That flag also injects headers into *successful*
@@ -75,13 +75,11 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
     returning. A full window is conservative: coming back early is the failure a
     caller can absorb.
     """
-    return await http_exception_handler(
-        request,
-        HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {exc.detail}",
-            headers={"Retry-After": str(exc.limit.limit.get_expiry())},
-        ),
+    return error_response(
+        429,
+        ErrorCode.RATE_LIMITED,
+        f"Rate limit exceeded: {exc.detail}",
+        headers={"Retry-After": str(exc.limit.limit.get_expiry())},
     )
 
 
@@ -140,7 +138,9 @@ async def get_current_principal(
     the request.
     """
     if credentials is None:
-        raise HTTPException(status_code=401, detail="Missing session credentials")
+        raise APIError(
+            401, ErrorCode.AUTHENTICATION_REQUIRED, "Missing session credentials"
+        )
     return await _resolve_principal(credentials, session)
 
 
@@ -166,7 +166,7 @@ async def _resolve_principal(
 ) -> Principal:
     app_session = await session.get(AppSession, credentials.credentials)
     if app_session is None or app_session.is_expired:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
+        raise APIError(401, ErrorCode.SESSION_INVALID, "Invalid or expired session")
 
     user = await user_for_session(session, app_session)
     if app_session.user_id is not None and user is None:
@@ -174,6 +174,6 @@ async def _resolve_principal(
         # produce this — accounts are not deleted — but resolving it as an
         # anonymous session would hand the bearer whatever patient_id happened to
         # be frozen on it, which is the one outcome worth refusing outright.
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
+        raise APIError(401, ErrorCode.SESSION_INVALID, "Invalid or expired session")
 
     return Principal(session=app_session, user=user)

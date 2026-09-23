@@ -15,6 +15,7 @@ from tests.app_harness import (
     SMART_LAUNCHER,
     app_db,
     mock_server,
+    refusal,
     token_response,
 )
 from tests.app_harness import client as _client
@@ -123,11 +124,8 @@ async def test_a_throttled_route_answers_a_model_until_it_refuses(
     not — so a route answering a model fails where one answering ``JSONResponse``
     does not (see ``deps.rate_limit_exceeded_handler`` for why that decides how
     ``Retry-After`` is set). And the refusal itself must read like every other
-    refusal here: ``{"detail": …}``, not slowapi's own ``{"error": …}``.
-
-    Driven against `/auth/connect` rather than the deprecated `/auth/start`,
-    which keeps its original ``{"error": …}`` body and so is the one route that
-    cannot demonstrate the convention.
+    refusal here — the standard envelope under ``RATE_LIMITED`` — rather than the
+    shape slowapi's own handler invents.
     """
     async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'throttle.db'}"):
         async with _client() as client:
@@ -144,8 +142,9 @@ async def test_a_throttled_route_answers_a_model_until_it_refuses(
     assert second.status_code == 200, second.text
 
     assert third.status_code == 429
-    assert "error" not in third.json()
-    assert third.json()["detail"].startswith("Rate limit exceeded")
+    code, message = refusal(third)
+    assert code == "RATE_LIMITED"
+    assert message.startswith("Rate limit exceeded")
     # The window the limit itself declares, so a caller is told when to return
     # rather than left to guess.
     assert third.headers["retry-after"] == "60"

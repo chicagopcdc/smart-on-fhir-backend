@@ -14,8 +14,8 @@ import logging
 import secrets
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import APIRouter, Body, Depends, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,12 +26,12 @@ from app.api.deps import (
     get_optional_principal,
     limiter,
 )
+from app.api.errors import APIError, ErrorCode, error_response, refusal
 from app.api.schemas import (
     CallbackResponse,
     Connection,
     ConnectRequest,
     ConnectResponse,
-    refusal,
 )
 from app.auth.models import AppSession, OAuthState, User
 from app.core.config import get_settings
@@ -152,18 +152,22 @@ async def _begin_authorization(
 
     Returns ``(authorization_url, state, ttl_seconds)``. Everything that can be
     refused is refused here, before the patient is sent anywhere, and as an
-    ``HTTPException`` so a caller is told which of the two it was: their request,
-    or the server they named.
+    ``APIError`` so a caller is told which of the two it was: their request, or
+    the server they named.
     """
     ehr = config.EHR_CONFIGS.get(provider)
     if not ehr:
-        raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
+        raise APIError(
+            400, ErrorCode.UNKNOWN_PROVIDER, "Unknown or unsupported provider"
+        )
 
     # A provider with no configured client_id is a deployment that did not set
     # its credentials; fail clearly here rather than redirect the user to the
     # EHR with an empty client_id and let them hit an opaque invalid_client.
     if not ehr.get("client_id"):
-        raise HTTPException(status_code=503, detail="Provider is not configured")
+        raise APIError(
+            503, ErrorCode.PROVIDER_NOT_CONFIGURED, "Provider is not configured"
+        )
 
     # Canonicalize once so the allowlist check, the persisted state, and the
     # derived aud all agree on the same issuer string.
@@ -180,8 +184,8 @@ async def _begin_authorization(
     if iss not in allowed_issuers and not any(
         iss.startswith(prefix) for prefix in allowed_prefixes
     ):
-        raise HTTPException(
-            status_code=400, detail="Issuer not allowed for this provider"
+        raise APIError(
+            400, ErrorCode.ISSUER_NOT_ALLOWED, "Issuer not allowed for this provider"
         )
 
     provider_adapter = provider_for(ehr, iss)
@@ -189,8 +193,10 @@ async def _begin_authorization(
         smart_config = await provider_adapter.discover(iss)
     except SMARTDiscoveryError as exc:
         _log_upstream_failure(exc, stage="discovery", provider=provider, iss=iss)
-        raise HTTPException(
-            status_code=502, detail="Could not read the server's SMART configuration"
+        raise APIError(
+            502,
+            ErrorCode.PROVIDER_UNREACHABLE,
+            "Could not read the server's SMART configuration",
         ) from exc
 
     # Opportunistic sweep so expired anti-CSRF state does not accumulate.
@@ -220,14 +226,26 @@ async def _begin_authorization(
     response_model=ConnectResponse,
     summary="Start connecting a patient to a provider",
     responses={
-        400: refusal("Unknown provider, or an issuer that provider is not registered for"),
+        400: refusal(
+            "Unknown provider, or an issuer that provider is not registered for",
+            ErrorCode.UNKNOWN_PROVIDER,
+            ErrorCode.ISSUER_NOT_ALLOWED,
+        ),
         401: refusal(
             "A session was presented but is invalid or expired, or this deployment "
-            "requires signing in and no session was presented"
+            "requires signing in and no session was presented",
+            ErrorCode.AUTHENTICATION_REQUIRED,
+            ErrorCode.SESSION_INVALID,
         ),
         429: RATE_LIMITED,
-        502: refusal("The server's SMART configuration could not be read"),
-        503: refusal("The provider has no credentials configured in this deployment"),
+        502: refusal(
+            "The server's SMART configuration could not be read",
+            ErrorCode.PROVIDER_UNREACHABLE,
+        ),
+        503: refusal(
+            "The provider has no credentials configured in this deployment",
+            ErrorCode.PROVIDER_NOT_CONFIGURED,
+        ),
     },
 )
 @limiter.limit(auth_rate_limit)
@@ -280,7 +298,11 @@ async def connect(
     if get_settings().require_user_login and (
         principal is None or not principal.is_authenticated
     ):
-        raise HTTPException(status_code=401, detail="Sign in before connecting a provider")
+        raise APIError(
+            401,
+            ErrorCode.AUTHENTICATION_REQUIRED,
+            "Sign in before connecting a provider",
+        )
 
     url, state, ttl = await _begin_authorization(
         session,
@@ -301,6 +323,25 @@ async def connect(
     "authorization URL instead of redirecting to it and can link a second "
     "provider to an existing patient record. Kept so the current frontend keeps "
     "working; it will be removed once that has moved.",
+    # The same refusals as `/auth/connect`, which does the deciding for both —
+    # minus the 401, since this route takes no session. Documented rather than
+    # left blank because a deprecated route is still one a caller has to handle.
+    responses={
+        400: refusal(
+            "Unknown provider, or an issuer that provider is not registered for",
+            ErrorCode.UNKNOWN_PROVIDER,
+            ErrorCode.ISSUER_NOT_ALLOWED,
+        ),
+        429: RATE_LIMITED,
+        502: refusal(
+            "The server's SMART configuration could not be read",
+            ErrorCode.PROVIDER_UNREACHABLE,
+        ),
+        503: refusal(
+            "The provider has no credentials configured in this deployment",
+            ErrorCode.PROVIDER_NOT_CONFIGURED,
+        ),
+    },
 )
 @limiter.limit(auth_rate_limit)
 async def start_auth(
@@ -313,10 +354,13 @@ async def start_auth(
         url, _state, _ttl = await _begin_authorization(
             session, provider=provider, iss=iss, link_patient_id=None
         )
-    except HTTPException as exc:
-        # This endpoint answered with {"error": …} before /auth/connect existed,
-        # and callers still read that. The new shape is on /auth/connect.
-        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    except APIError as exc:
+        # Returned rather than re-raised because this route redirects on success,
+        # so a refusal is the only thing it answers with a body. That body is now
+        # the standard envelope: this endpoint predates it and once answered a
+        # bare ``{"error": "<sentence>"}``, but one deprecated route keeping a
+        # shape of its own is what made this worth a ticket.
+        return error_response(exc.status_code, exc.code, exc.message)
 
     return RedirectResponse(url)
 
@@ -328,12 +372,18 @@ async def start_auth(
     responses={
         400: refusal(
             "Invalid or expired state, a refused exchange, or an authorization "
-            "with no patient context"
+            "with no patient context",
+            ErrorCode.INVALID_STATE,
+            ErrorCode.UNKNOWN_PROVIDER,
+            ErrorCode.AUTHORIZATION_REJECTED,
+            ErrorCode.NO_PATIENT_CONTEXT,
         ),
         429: RATE_LIMITED,
         502: refusal(
             "The provider could not be reached, or requires an unsupported client "
-            "authentication method"
+            "authentication method",
+            ErrorCode.PROVIDER_UNREACHABLE,
+            ErrorCode.PROVIDER_UNSUPPORTED,
         ),
     },
 )
@@ -355,7 +405,7 @@ async def handle_callback(
     # State now lives in Postgres, so it survives restarts and is shared across workers.
     state_row = await session.get(OAuthState, state)
     if state_row is None or state_row.is_expired:
-        raise HTTPException(status_code=400, detail="Invalid or expired state")
+        raise APIError(400, ErrorCode.INVALID_STATE, "Invalid or expired state")
 
     # The issuer was validated against the provider's allowlist at /auth/connect
     # and is the only one stored on the state row, so it is trusted here. The
@@ -369,7 +419,9 @@ async def handle_callback(
     user_id = state_row.user_id
     ehr = config.EHR_CONFIGS.get(provider)
     if ehr is None:
-        raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
+        raise APIError(
+            400, ErrorCode.UNKNOWN_PROVIDER, "Unknown or unsupported provider"
+        )
 
     # Consume the state so the same authorization cannot be replayed within its TTL.
     await session.delete(state_row)
@@ -383,26 +435,33 @@ async def handle_callback(
         )
     except SMARTDiscoveryError as exc:
         _log_upstream_failure(exc, stage="discovery", provider=provider, iss=iss)
-        raise HTTPException(
-            status_code=502, detail="Could not read the server's SMART configuration"
+        raise APIError(
+            502,
+            ErrorCode.PROVIDER_UNREACHABLE,
+            "Could not read the server's SMART configuration",
         ) from exc
     except TokenExchangeError as exc:
         # The provider rejected the exchange — a bad code, expired grant, etc.
         _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
-        raise HTTPException(status_code=400, detail="Token exchange failed") from exc
+        raise APIError(
+            400, ErrorCode.AUTHORIZATION_REJECTED, "Token exchange failed"
+        ) from exc
     except SMARTProviderError as exc:
         # The server requires a client authentication method we do not support.
         _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
-        raise HTTPException(
-            status_code=502, detail="Unsupported provider configuration"
+        raise APIError(
+            502, ErrorCode.PROVIDER_UNSUPPORTED, "Unsupported provider configuration"
         ) from exc
     except httpx.HTTPError as exc:
         # Timeout or network failure reaching the provider — an upstream problem.
-        # The same wording as the refusal above, under a different status, which
-        # is exactly why the two have to be told apart somewhere: one is the
-        # provider saying no, the other is never having reached it.
+        # The same wording as the refusal above, under a different status — and
+        # now under a different code too, which is what finally tells the two
+        # apart for a caller: one is the provider saying no, the other is never
+        # having reached it.
         _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
-        raise HTTPException(status_code=502, detail="Token exchange failed") from exc
+        raise APIError(
+            502, ErrorCode.PROVIDER_UNREACHABLE, "Token exchange failed"
+        ) from exc
 
     # Where an account started this, the record to join is whatever it owns
     # *now* rather than what it owned when the flow began. The two differ when a
@@ -422,8 +481,10 @@ async def handle_callback(
     # cannot anchor one. Refuse rather than store it under an empty id, which two
     # such authorizations would then share.
     if not token_set.patient:
-        raise HTTPException(
-            status_code=400, detail="Authorization returned no patient context"
+        raise APIError(
+            400,
+            ErrorCode.NO_PATIENT_CONTEXT,
+            "Authorization returned no patient context",
         )
 
     _log_scope_narrowing(provider, token_set.scope)

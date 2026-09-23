@@ -26,6 +26,7 @@ from tests.app_harness import (
     client,
     connect,
     mock_server,
+    refusal,
     token_response,
 )
 
@@ -204,7 +205,10 @@ async def test_connect_refuses_an_issuer_the_provider_is_not_registered_for(db_u
             )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Issuer not allowed for this provider"
+    assert refusal(response) == (
+        "ISSUER_NOT_ALLOWED",
+        "Issuer not allowed for this provider",
+    )
     # Refused before any request was made to the issuer it named.
     assert not respx.calls
 
@@ -274,7 +278,7 @@ async def test_a_state_is_consumed_so_a_link_cannot_be_replayed(db_url):
 
     assert first_use.status_code == 200
     assert replay.status_code == 400
-    assert replay.json()["detail"] == "Invalid or expired state"
+    assert refusal(replay) == ("INVALID_STATE", "Invalid or expired state")
 
 
 @respx.mock
@@ -321,7 +325,13 @@ async def test_auth_start_still_redirects_the_browser(db_url):
     assert redirected.status_code == 307
     assert redirected.headers["location"].startswith(SMART_LAUNCHER["authorize_url"])
     assert refused.status_code == 400
-    assert refused.json() == {"error": "Unknown or unsupported provider"}
+    # The deprecated route answers the same envelope as everything else now. It
+    # used to answer ``{"error": "<sentence>"}``, and that difference is what the
+    # error-shape work removed.
+    assert refusal(refused) == (
+        "UNKNOWN_PROVIDER",
+        "Unknown or unsupported provider",
+    )
 
 
 @respx.mock

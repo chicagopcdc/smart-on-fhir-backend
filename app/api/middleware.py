@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.api.schemas import ErrorResponse
+from app.api.errors import ErrorCode, error_body
 from app.core.logging import fields, request_id
 
 logger = logging.getLogger(__name__)
@@ -105,11 +105,11 @@ class RequestContext:
                 # left to replace it with. Let it unwind and be logged as a broken
                 # stream rather than pretending it was answered.
                 raise
-            # Built from the model the API declares its refusals with, so this
-            # response — the one no route lists in its ``responses`` — cannot be
-            # the one that drifts from the shape every other refusal keeps.
+            # Built through the same helper every other refusal goes through, so
+            # this response — the one no route lists in its ``responses`` — cannot
+            # be the one that drifts from the shape the rest of them keep.
             await JSONResponse(
-                ErrorResponse(detail="Internal server error").model_dump(),
+                error_body(ErrorCode.INTERNAL_ERROR, "Internal server error"),
                 status_code=500,
                 headers={REQUEST_ID_HEADER: current},
             )(scope, receive, send)

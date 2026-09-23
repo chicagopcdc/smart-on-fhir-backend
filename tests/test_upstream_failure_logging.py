@@ -29,6 +29,7 @@ from tests.app_harness import (
     app_db,
     client,
     load_fixture,
+    refusal,
 )
 
 WELL_KNOWN = LAUNCHER["iss"] + "/.well-known/smart-configuration"
@@ -109,7 +110,7 @@ async def test_a_discovery_failure_is_named_in_the_log(
 
     # Unchanged, and the point of the exercise: four servers, one answer.
     assert response.status_code == 502, name
-    assert response.json() == {"detail": CONFIG_UNREADABLE}, name
+    assert refusal(response) == ("PROVIDER_UNREACHABLE", CONFIG_UNREADABLE), name
 
     entry = _fields(logged, "auth.discovery.failed")
     assert entry["reason"] == reason, name
@@ -213,9 +214,14 @@ async def test_an_exchange_failure_is_named_in_the_log(
             response = await _reach_callback(http, answer)
 
     # One sentence for every one of them, under two different statuses. That is
-    # the flattening this exists to make survivable, not to undo.
+    # the flattening this exists to make survivable, not to undo — the code below
+    # separates them for a program without giving the sentence anything a
+    # provider chose.
     assert response.status_code == expected_status, name
-    assert response.json() == {"detail": EXCHANGE_FAILED}, name
+    expected_code = (
+        "AUTHORIZATION_REJECTED" if expected_status == 400 else "PROVIDER_UNREACHABLE"
+    )
+    assert refusal(response) == (expected_code, EXCHANGE_FAILED), name
 
     entry = _fields(logged, "auth.token_exchange.failed")
     assert entry["reason"] == reason, name
@@ -227,7 +233,13 @@ async def test_an_exchange_failure_is_named_in_the_log(
 async def test_a_refusal_and_an_outage_share_a_sentence_and_not_a_log_line(
     logged, tmp_path
 ):
-    """Both say "Token exchange failed"; only one of them is our problem to chase."""
+    """Both say "Token exchange failed"; only one of them is our problem to chase.
+
+    The sentence is deliberately the same: a refusal is the provider's business
+    and repeating its reasons back would say more about the server than a patient
+    asked. What differs is the code — and that is the point, since a caller acts
+    on a rejected grant (start again) differently from an outage (come back).
+    """
     async with app_db(f"sqlite+aiosqlite:///{tmp_path / 'both.db'}"):
         async with client() as http:
             refused = await _reach_callback(
@@ -239,7 +251,8 @@ async def test_a_refusal_and_an_outage_share_a_sentence_and_not_a_log_line(
             unreachable = await _reach_callback(http, httpx.ConnectError("down"))
             unreachable_entry = _fields(logged, "auth.token_exchange.failed")
 
-    assert refused.json() == unreachable.json() == {"detail": EXCHANGE_FAILED}
+    assert refusal(refused) == ("AUTHORIZATION_REJECTED", EXCHANGE_FAILED)
+    assert refusal(unreachable) == ("PROVIDER_UNREACHABLE", EXCHANGE_FAILED)
     assert refused_entry["reason"] == "invalid_grant"
     assert unreachable_entry["reason"] == "unreachable"
 

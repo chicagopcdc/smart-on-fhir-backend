@@ -27,6 +27,7 @@ from tests.app_harness import (
     app_db as _app_db,
     client as _client,
     load_fixture,
+    refusal,
 )
 
 
@@ -145,7 +146,10 @@ async def test_launcher_prefix_does_not_allow_a_lookalike_host(tmp_path):
                 follow_redirects=False,
             )
     assert response.status_code == 400
-    assert response.json()["error"] == "Issuer not allowed for this provider"
+    assert refusal(response) == (
+        "ISSUER_NOT_ALLOWED",
+        "Issuer not allowed for this provider",
+    )
     assert not respx.calls  # no discovery request was attempted
 
 

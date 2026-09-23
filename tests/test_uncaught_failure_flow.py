@@ -34,6 +34,7 @@ from tests.app_harness import (
     client,
     connect_and_serve,
     load_fixture,
+    refusal,
 )
 
 ORIGIN = "http://localhost:3000"
@@ -64,7 +65,7 @@ async def test_a_failure_with_the_store_gone_still_answers_with_cors(written, tm
             )
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "Internal server error"}
+    assert refusal(response) == ("INTERNAL_ERROR", "Internal server error")
     assert response.headers.get("access-control-allow-origin") == ORIGIN, (
         "the browser would see a CORS error instead of the server error"
     )
@@ -287,6 +288,9 @@ async def test_the_deprecated_read_degrades_like_the_route_that_replaced_it(tmp_
             )
 
     assert response.status_code == 502, response.text
-    # Its own legacy shape, which predates {"detail": ...} and stays that way
-    # until the frontend has moved off it.
-    assert "attention" in response.json()["error"]
+    # In the standard envelope like every other refusal, and under the code that
+    # says reconnecting is not the fix — which is what this route had no field
+    # for before.
+    code, message = refusal(response)
+    assert code == "CONNECTION_UNREADABLE"
+    assert "attention" in message

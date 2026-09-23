@@ -17,7 +17,7 @@ FastAPI cannot resolve a stringified annotation back to the type it names.
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from app.api.deps import (
     get_current_principal,
     limiter,
 )
+from app.api.errors import APIError, ErrorCode, refusal
 from app.api.schemas import (
     AuthProviderInfo,
     LoginCallbackResponse,
@@ -35,7 +36,6 @@ from app.api.schemas import (
     LogoutResponse,
     SessionResponse,
     UserProfile,
-    refusal,
 )
 from app.auth import oidc
 from app.auth.models import AppSession, LoginState, utcnow
@@ -54,7 +54,15 @@ router = APIRouter(tags=["authentication"])
 
 NOT_CONFIGURED = refusal(
     "This deployment has no identity provider configured, so there is nothing "
-    "to sign in to"
+    "to sign in to",
+    ErrorCode.LOGIN_NOT_CONFIGURED,
+)
+
+
+SESSION_REQUIRED = refusal(
+    "Missing, invalid, or expired session",
+    ErrorCode.AUTHENTICATION_REQUIRED,
+    ErrorCode.SESSION_INVALID,
 )
 
 
@@ -73,8 +81,10 @@ def _client() -> oidc.OIDCClient:
     try:
         return oidc.client()
     except oidc.OIDCNotConfigured as exc:
-        raise HTTPException(
-            status_code=503, detail="Login is not configured for this deployment"
+        raise APIError(
+            503,
+            ErrorCode.LOGIN_NOT_CONFIGURED,
+            "Login is not configured for this deployment",
         ) from exc
 
 
@@ -142,7 +152,10 @@ async def auth_provider_info():
     summary="Start signing a user in",
     responses={
         429: RATE_LIMITED,
-        502: refusal("The identity provider's configuration could not be read"),
+        502: refusal(
+            "The identity provider's configuration could not be read",
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+        ),
         503: NOT_CONFIGURED,
     },
 )
@@ -166,9 +179,10 @@ async def login(
         config = await client.discover()
     except oidc.OIDCDiscoveryError as exc:
         _log_login_failure(exc, stage="discovery")
-        raise HTTPException(
-            status_code=502,
-            detail="Could not read the identity provider's configuration",
+        raise APIError(
+            502,
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+            "Could not read the identity provider's configuration",
         ) from exc
 
     # Opportunistic sweep so abandoned logins do not accumulate, on the same
@@ -195,9 +209,16 @@ async def login(
     response_model=LoginCallbackResponse,
     summary="Exchange the sign-in code for a session",
     responses={
-        400: refusal("Invalid or expired state, or an identity that did not verify"),
+        400: refusal(
+            "Invalid or expired state, or an identity that did not verify",
+            ErrorCode.INVALID_STATE,
+            ErrorCode.SIGN_IN_NOT_VERIFIED,
+        ),
         429: RATE_LIMITED,
-        502: refusal("The identity provider could not be reached"),
+        502: refusal(
+            "The identity provider could not be reached",
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+        ),
         503: NOT_CONFIGURED,
     },
 )
@@ -231,7 +252,7 @@ async def login_callback(
 
     state_row = await session.get(LoginState, body.state)
     if state_row is None or state_row.is_expired:
-        raise HTTPException(status_code=400, detail="Invalid or expired state")
+        raise APIError(400, ErrorCode.INVALID_STATE, "Invalid or expired state")
 
     nonce = state_row.nonce
     code_verifier = state_row.code_verifier
@@ -244,33 +265,39 @@ async def login_callback(
         token_response = await client.exchange_code(config, body.code, code_verifier)
     except oidc.OIDCDiscoveryError as exc:
         _log_login_failure(exc, stage="discovery")
-        raise HTTPException(
-            status_code=502,
-            detail="Could not read the identity provider's configuration",
+        raise APIError(
+            502,
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+            "Could not read the identity provider's configuration",
         ) from exc
     except oidc.OIDCExchangeError as exc:
         # The provider refused the code, or could not be reached to ask. Both are
         # 502 rather than 400: the state was ours and it was good, so whatever
         # went wrong is between us and the provider, not the user's doing.
         _log_login_failure(exc, stage="token_exchange")
-        raise HTTPException(
-            status_code=502, detail="Could not complete sign-in with the identity provider"
+        raise APIError(
+            502,
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+            "Could not complete sign-in with the identity provider",
         ) from exc
 
     try:
         identity = await client.identity_from(config, token_response, nonce=nonce)
     except oidc.OIDCDiscoveryError as exc:
         _log_login_failure(exc, stage="signing_keys")
-        raise HTTPException(
-            status_code=502,
-            detail="Could not read the identity provider's signing keys",
+        raise APIError(
+            502,
+            ErrorCode.IDENTITY_PROVIDER_ERROR,
+            "Could not read the identity provider's signing keys",
         ) from exc
     except oidc.IDTokenError as exc:
         # A token that came back from a successful exchange and does not verify.
         # Refused outright: this is the check that stands between an assertion
         # about who someone is and an account holding their medical records.
         _log_login_failure(exc, stage="id_token")
-        raise HTTPException(status_code=400, detail="Sign-in could not be verified") from exc
+        raise APIError(
+            400, ErrorCode.SIGN_IN_NOT_VERIFIED, "Sign-in could not be verified"
+        ) from exc
 
     user = await upsert_user(session, identity)
     ttl = get_settings().app_session_ttl_seconds
@@ -298,7 +325,7 @@ async def login_callback(
     "/auth/me",
     response_model=SessionResponse,
     summary="Who the presented session belongs to",
-    responses={401: refusal("Missing, invalid, or expired session")},
+    responses={401: SESSION_REQUIRED},
 )
 async def current_session(
     principal: Principal = Depends(get_current_principal),
@@ -330,7 +357,7 @@ async def current_session(
     "/auth/logout",
     response_model=LogoutResponse,
     summary="Sign out, ending this session",
-    responses={401: refusal("Missing, invalid, or expired session")},
+    responses={401: SESSION_REQUIRED},
 )
 async def logout(
     principal: Principal = Depends(get_current_principal),
