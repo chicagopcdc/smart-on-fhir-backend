@@ -559,7 +559,16 @@ The API is now at http://localhost:8000, with interactive docs at http://localho
 
 ## Deploying it
 
-Two things this backend does not do for itself, both of which a deployment has to.
+There is Terraform for this in [`infrastructure/`](infrastructure/) — VPC,
+Aurora, ECR, Secrets Manager, IAM and the App Runner service, plus the S3 and
+CloudFront the frontend is served from. `infrastructure/README.md` is the
+deployment guide for both halves of the application.
+
+What follows is what any deployment has to arrange, whether or not it uses that
+Terraform. Under App Runner the first of the two is handled for you — App Runner
+terminates TLS and forwards to the container — and the second is not, which is
+why the stack sets `FORWARDED_ALLOW_IPS`.
+
 
 ### TLS, and where it terminates
 

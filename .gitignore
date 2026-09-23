@@ -201,3 +201,33 @@ cython_debug/
 
 .DS_Store
 .python-version
+# Terraform
+#
+# Note what is *not* here. infrastructure/envs/*/terraform.tfvars is committed:
+# it holds this project's per-environment decisions and no credentials — client
+# ids and issuers are public, and every secret is a Secrets Manager reference.
+# .terraform.lock.hcl is committed too, so a provider upgrade is a reviewable
+# diff rather than something that happens to whoever inits next.
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Backend configuration names a specific account's state bucket.
+backend.hcl
+
+# *.auto.tfvars is loaded without being named on the command line, which makes
+# it the usual place a local override with real values ends up.
+*.auto.tfvars
+*.auto.tfvars.json
+
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+.terraformrc
+terraform.rc
