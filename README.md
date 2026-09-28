@@ -7,8 +7,8 @@ resources for the connected patient.
 
 ## How it works
 
-0. Optionally, the patient signs in with the deployment's identity provider — Okta,
-   Keycloak or Google — through `POST /auth/login` and `POST /auth/login/callback`.
+0. Optionally, the patient signs in with the deployment's identity provider —
+   Keycloak — through `POST /auth/login` and `POST /auth/login/callback`.
    What comes back is a session that names an *account*. Everything below then belongs
    to that account, and is still there the next time they sign in. See
    [Accounts and signing in](#accounts-and-signing-in).
@@ -127,14 +127,16 @@ at the EHR where it can.
 
 ### Configuring the identity provider
 
-Any OIDC provider works. Everything but the three settings below is read from the
-issuer's `.well-known/openid-configuration` at runtime, the same way SMART endpoints
-are, so Okta, Keycloak and Google differ only in configuration:
+**This deployment signs users in with Keycloak.** Nothing in the code says so, and
+that is the point: the login layer is a plain OIDC relying party, so everything but the
+three settings below is read from the issuer's `.well-known/openid-configuration` at
+runtime, the same way SMART endpoints are. Pointing it somewhere else is configuration
+rather than a change:
 
 | | |
 | --- | --- |
+| **Keycloak** | `OIDC_ISSUER=https://<host>/realms/<realm>` |
 | Okta | `OIDC_ISSUER=https://<your-org>.okta.com/oauth2/default` |
-| Keycloak | `OIDC_ISSUER=https://<host>/realms/<realm>` |
 | Google | `OIDC_ISSUER=https://accounts.google.com` |
 
 Register the redirect URI `FRONTEND_HOSTNAME + /auth/login/callback` with the provider —
@@ -142,9 +144,9 @@ it must match exactly or the provider refuses the redirect back. `OIDC_CLIENT_SE
 optional: omit it for a public client, which authenticates with PKCE alone. PKCE is sent
 either way.
 
-A **Keycloak** issuer is a *realm*, not the server: one Keycloak serves many, and the
-realm is what holds the users and the client registration. Two realms on one host are
-two issuers, and an account under one is not an account under the other. In the realm's
+A Keycloak issuer is a *realm*, not the server: one Keycloak serves many, and the realm
+is what holds the users and the client registration. Two realms on one host are two
+issuers, and an account under one is not an account under the other. In the realm's
 **Clients → Create client**, with the client id you will set as `OIDC_CLIENT_ID`:
 
 | Setting | Value |
@@ -178,6 +180,9 @@ then issuer, audience, expiry, and the nonce that binds it to the request that a
 it. A token failing any of those is refused and no account is created.
 
 #### Running Keycloak locally
+
+The local one runs the same software a deployment does, so what works here is what
+works there — it is not a stand-in.
 
 `docker compose --profile keycloak up` starts one alongside the stack, importing
 `keycloak/realm-smartfhir.json` on first start: a realm with the client above already
@@ -595,7 +600,7 @@ Settings are read from the environment, and from `.env` in local development.
 | `EPIC_ISSUER` | no | FHIR base URL of the production Epic deployment. Authorization for the `EPIC` provider is only allowed against this issuer. |
 | `CERNER_CLIENT_ID`, `CERNER_CLIENT_SECRET` | no | Client credentials for the Cerner / Oracle Health sandbox, which is registered as a confidential client. Oracle issues the secret through a Cerner Central system account, reached from the application's page in code Console. Leave either unset and the provider rejects every request, and `GET /providers` omits it. |
 | `SMART_LAUNCHER_CLIENT_ID` | no | Client id for the public SMART App Launcher. The launcher does not validate it, so a default is used when unset. |
-| `OIDC_ISSUER` | no | The identity provider users sign in with, e.g. `https://<org>.okta.com/oauth2/default`, `https://<host>/realms/<realm>` for Keycloak, or `https://accounts.google.com`. Unset turns login off entirely: the login routes answer `503` and connecting stays anonymous. |
+| `OIDC_ISSUER` | no | The identity provider users sign in with — a Keycloak realm, `https://<host>/realms/<realm>`. Any OIDC issuer works, e.g. `https://<org>.okta.com/oauth2/default` or `https://accounts.google.com`. Unset turns login off entirely: the login routes answer `503` and connecting stays anonymous. |
 | `OIDC_CLIENT_ID` | no | The client registered with that provider. Required alongside `OIDC_ISSUER` for login to be considered configured. |
 | `OIDC_CLIENT_SECRET` | no | Omit for a public client, which authenticates with PKCE alone. PKCE is sent either way. |
 | `OIDC_SCOPES` | no | Scopes requested at sign-in. Defaults to `openid profile email`. Grants no access to health data. |
@@ -892,12 +897,15 @@ only the transport is faked. A token signed with the wrong key, minted for the w
 audience, or carrying another login's nonce is refused there for the same reason it would
 be in production.
 
-That provider is shaped like Okta, and `tests/test_keycloak_flow.py` runs the same flow
-against a Keycloak realm — a realm under a path rather than a host, a key set with an
-encryption key beside the signing one, and an account with no `name` claim. Its discovery
-document is a capture of what Keycloak 26.7 really served for
-`keycloak/realm-smartfhir.json`, so the shape under test is that server's rather than a
-guess at it. There is no Keycloak adapter, and those tests are what keeps it that way.
+That provider is shaped like Okta, down to its endpoint paths and subject format, and
+`tests/test_keycloak_flow.py` runs the same flow against the one this deployment actually
+uses — a Keycloak realm, which is a realm under a path rather than a host, a key set with
+an encryption key beside the signing one, and an account with no `name` claim. Keeping
+both is the point: the layer has to stay one that any OIDC issuer can be pointed at, and
+a suite that only ever saw Keycloak would stop proving that. Its discovery document is a capture of what Keycloak
+26.7 really served for `keycloak/realm-smartfhir.json`, so the shape under test is that
+server's rather than a guess at it. There is no Keycloak adapter, and those tests are
+what keeps it that way.
 
 It cannot prove those recordings still describe the servers they came from, and twice they
 have not. ONC's endpoint list moved, then the mirror it moved to was pruned, and the

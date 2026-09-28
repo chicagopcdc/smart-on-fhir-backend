@@ -41,11 +41,12 @@ class Settings(BaseSettings):
     # --- who the user is, as opposed to which records they connected ---------
     #
     # The identity provider users sign in with, as a plain OIDC relying party.
-    # Okta, Keycloak and Google are all ordinary OIDC providers, so which one a
-    # deployment uses is a matter of configuration rather than of code:
+    # This deployment uses Keycloak. Nothing below knows that: Keycloak, Okta
+    # and Google are all ordinary OIDC providers, so which one is a matter of
+    # configuration rather than of code.
     #
-    #   Okta      OIDC_ISSUER=https://<org>.okta.com/oauth2/default
     #   Keycloak  OIDC_ISSUER=https://<host>/realms/<realm>
+    #   Okta      OIDC_ISSUER=https://<org>.okta.com/oauth2/default
     #   Google    OIDC_ISSUER=https://accounts.google.com
     #
     # A Keycloak issuer is a realm, not the server: one Keycloak serves many,

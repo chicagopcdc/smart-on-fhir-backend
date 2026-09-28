@@ -5,8 +5,9 @@ answered by different servers. This module answers the first. It knows nothing
 about FHIR, and the tokens it handles are never used to read anything: an ID
 token is read once, for the ``sub`` inside it, and then discarded.
 
-There is one implementation rather than one per vendor, for the same reason
-``app/providers/generic.py`` has one for SMART servers: Okta, Keycloak and
+This deployment signs users in with **Keycloak**, and nothing in this module
+says so. There is one implementation rather than one per vendor, for the same
+reason ``app/providers/generic.py`` has one for SMART servers: Keycloak, Okta and
 Google are all ordinary OIDC providers, so everything that differs between them
 — where to send the user, where to exchange the code, which keys sign the tokens
 — is published at the issuer's ``.well-known/openid-configuration`` and read at
@@ -226,7 +227,7 @@ class OIDCClient:
         PKCE is always sent rather than conditional on what the provider
         advertises, which is the opposite of the SMART path. There the servers
         are someone else's and vary; here the issuer is one this deployment
-        chose, Okta, Keycloak and Google all support S256, and a provider that
+        chose, Keycloak, Okta and Google all support S256, and a provider that
         ignores the challenge is no worse off for having been sent one. It also
         means a Keycloak client registered with ``pkce.code.challenge.method``
         set to S256 — which makes Keycloak *refuse* a request without a
@@ -255,8 +256,8 @@ class OIDCClient:
             "code_verifier": code_verifier,
             "client_id": self.client_id,
         }
-        # A confidential client authenticates with Basic, which is what Okta,
-        # Keycloak and Google all accept and what RFC 6749 §2.3.1 prefers. A
+        # A confidential client authenticates with Basic, which is what
+        # Keycloak, Okta and Google all accept and what RFC 6749 §2.3.1 prefers. A
         # public client has no secret and leans on PKCE, which is why client_id
         # is in the body either way.
         auth = (self.client_id, self.client_secret) if self.client_secret else None

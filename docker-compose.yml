@@ -122,8 +122,9 @@ services:
       retries: 5
       start_period: 15s
 
-  # An identity provider to sign in against, for developing the login layer
-  # without an Okta tenant. Off unless asked for: `docker compose --profile
+  # The identity provider this deployment signs users in with, run locally: the
+  # same software, so what works here is what works in front of a real realm
+  # rather than a stand-in for one. Off unless asked for: `docker compose --profile
   # keycloak up`. Nothing in the stack depends on it — the backend reads the
   # realm's configuration at the first sign-in rather than at startup, and a
   # deployment with OIDC_ISSUER unset never reaches for one at all.
