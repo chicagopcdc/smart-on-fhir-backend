@@ -9,7 +9,14 @@
 # here belongs in both files in the same commit.
 
 locals {
-  name_prefix  = "${var.project}-${var.environment}"
+  name_prefix = "${var.project}-${var.environment}"
+
+  # The cluster takes the environment's name and the service adds "-backend", so a
+  # second service in the same environment has somewhere to go. Both are passed to
+  # the iam module as strings rather than read back from the ecs module's outputs:
+  # ECS needs the roles before it can create the resources those policies name, so
+  # taking the names from here is what keeps it from being a cycle.
+  cluster_name = "${var.project}-${var.environment}"
   service_name = "${var.project}-${var.environment}-backend"
 
   # Cognito when this environment creates one, otherwise whatever was configured
@@ -27,14 +34,14 @@ locals {
     FRONTEND_HOSTNAME    = module.frontend.url
     CORS_ALLOWED_ORIGINS = module.frontend.url
 
-    # App Runner ships stdout to CloudWatch, where one object per line is what
-    # Logs Insights can query. The text format is for a developer's terminal.
+    # The awslogs driver ships stdout to CloudWatch, where one object per line is
+    # what Logs Insights can query. The text format is for a developer's terminal.
     LOG_FORMAT = "json"
 
     # Read by uvicorn, not by the application, which is why it is not in
-    # .env.example alongside the application's own settings. See the variable's
-    # own description for why a wildcard is the right value under App Runner and
-    # nowhere else.
+    # .env.example alongside the application's own settings. See the variable's own
+    # description for why a wildcard is the working value behind the load balancer,
+    # and for the one thing about it worth verifying.
     FORWARDED_ALLOW_IPS = var.forwarded_allow_ips
 
     REQUIRE_USER_LOGIN = var.require_user_login ? "true" : "false"
@@ -81,7 +88,10 @@ module "networking" {
   name_prefix        = local.name_prefix
   vpc_cidr           = var.vpc_cidr
   az_count           = var.az_count
+  enable_nat_gateway = var.enable_nat_gateway
   single_nat_gateway = var.single_nat_gateway
+  alb_ingress_cidrs  = var.alb_ingress_cidrs
+  app_port           = var.container_port
 }
 
 
@@ -180,11 +190,13 @@ module "iam" {
   source = "../../modules/iam"
 
   name_prefix  = local.name_prefix
+  cluster_name = local.cluster_name
   service_name = local.service_name
 
-  ecr_repository_arn  = module.ecr.repository_arn
-  secret_arns         = values(module.secrets.secret_arns)
-  secrets_kms_key_arn = var.secrets_kms_key_id
+  ecr_repository_arn     = module.ecr.repository_arn
+  secret_arns            = values(module.secrets.secret_arns)
+  secrets_kms_key_arn    = var.secrets_kms_key_id
+  enable_execute_command = var.enable_execute_command
 
   github_repository           = var.github_repository
   github_deploy_ref_patterns  = var.github_deploy_ref_patterns
@@ -198,32 +210,50 @@ module "iam" {
 
 # --- the service ------------------------------------------------------------
 
-module "app_runner" {
-  source = "../../modules/app_runner"
+module "ecs" {
+  source = "../../modules/ecs"
 
-  service_name         = local.service_name
+  name_prefix  = local.cluster_name
+  service_name = local.service_name
+
   image_repository_url = module.ecr.repository_url
   image_tag            = var.image_tag
 
-  access_role_arn   = module.iam.access_role_arn
-  instance_role_arn = module.iam.instance_role_arn
-  vpc_connector_arn = module.networking.vpc_connector_arn
+  execution_role_arn = module.iam.execution_role_arn
+  task_role_arn      = module.iam.task_role_arn
 
-  # Passed through so the service refuses to build against a network its egress
-  # cannot leave, rather than deploying and failing on the first FHIR call.
+  # Where the tasks run and whether they get a public address are one decision,
+  # made in the networking module because it is a routing question. Passing them
+  # separately here would let them disagree.
+  subnet_ids         = module.networking.ecs_task_subnet_ids
+  assign_public_ip   = module.networking.assign_public_ip
+  security_group_ids = [module.networking.ecs_tasks_security_group_id]
+
+  alb_subnet_ids         = module.networking.public_subnet_ids
+  alb_security_group_ids = [module.networking.alb_security_group_id]
+
+  # Passed through so the service refuses to build against a network its tasks
+  # cannot leave, rather than deploying and failing on the first image pull.
   has_internet_egress = module.networking.has_internet_egress
 
-  cpu      = var.service_cpu
-  memory   = var.service_memory
-  min_size = var.service_min_size
-  max_size = var.service_max_size
+  port             = var.container_port
+  cpu              = var.service_cpu
+  memory           = var.service_memory
+  cpu_architecture = var.service_cpu_architecture
+
+  desired_count    = var.service_desired_count
+  min_capacity     = var.service_min_size
+  max_capacity     = var.service_max_size
+  use_fargate_spot = var.use_fargate_spot
+
+  certificate_arn         = var.api_certificate_arn
+  alb_deletion_protection = var.alb_deletion_protection
 
   environment_variables = local.environment_variables
   environment_secrets   = module.secrets.secret_arns
 
-  custom_domain = var.service_custom_domain
+  log_retention_days     = var.log_retention_days
+  enable_execute_command = var.enable_execute_command
 
-  # The log group has to exist with its retention set before App Runner creates
-  # one without. Not a data dependency, so it is stated.
-  depends_on = [module.iam]
+  enable_container_insights = var.enable_container_insights
 }

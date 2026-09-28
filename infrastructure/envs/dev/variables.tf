@@ -30,10 +30,35 @@ variable "az_count" {
   default     = 2
 }
 
+variable "enable_nat_gateway" {
+  description = <<-DESC
+    Put the tasks in private subnets behind a NAT gateway, instead of in public
+    subnets with public IPs.
+
+    Off by default, and that default is why this stack runs on ECS. A Fargate task
+    can be given a public IP, so it reaches the EHRs through the internet gateway
+    and Aurora over the VPC's local route — no NAT, and no ~$32/month per AZ.
+    App Runner could not: its VPC connector's interfaces never get a public
+    address, so reaching Aurora cost it the internet.
+
+    Turning it on buys tasks with no public address at all, which cannot be
+    exposed by a later mistake in a security group. The boundary is otherwise
+    identical — the tasks admit the load balancer and nothing else.
+  DESC
+  type        = bool
+  default     = false
+}
+
 variable "single_nat_gateway" {
-  description = "One NAT gateway for the whole VPC instead of one per AZ. Cheaper, and a single point of failure for the service's route to the EHRs."
+  description = "When NAT is enabled, one gateway for the whole VPC instead of one per AZ. Ignored otherwise."
   type        = bool
   default     = true
+}
+
+variable "alb_ingress_cidrs" {
+  description = "Who may reach the API's load balancer. The whole internet by default, because a clinician's browser calls it directly."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 
@@ -114,59 +139,124 @@ variable "ecr_max_tagged_images" {
   default     = 30
 }
 
+variable "container_port" {
+  description = "Port the application container listens on. The Dockerfile's uvicorn binds 8000; changing it here without changing the image breaks the health check."
+  type        = number
+  default     = 8000
+}
+
 variable "service_cpu" {
-  description = "App Runner vCPU allocation."
-  type        = string
-  default     = "0.25 vCPU"
+  description = "Task CPU in Fargate units: 256 (.25 vCPU), 512, 1024, 2048, 4096. Valid memory depends on it."
+  type        = number
+  default     = 256
 }
 
 variable "service_memory" {
-  description = "App Runner memory allocation."
+  description = "Task memory in MiB. Must be a pairing Fargate allows with service_cpu; 256 CPU allows only 512, 1024 or 2048."
+  type        = number
+  default     = 512
+}
+
+variable "service_cpu_architecture" {
+  description = "X86_64 or ARM64. ARM64 is ~20% cheaper and every dependency has an arm64 wheel, but the image has to be built for it."
   type        = string
-  default     = "1 GB"
+  default     = "X86_64"
+}
+
+variable "service_desired_count" {
+  description = "Tasks to start with. Autoscaling moves it from there."
+  type        = number
+  default     = 1
 }
 
 variable "service_min_size" {
-  description = "Instances kept warm."
+  description = "Autoscaling floor. Zero is an outage, not a cold start — ECS has no scale-to-zero."
   type        = number
   default     = 1
 }
 
 variable "service_max_size" {
-  description = "Ceiling on instances."
+  description = "Autoscaling ceiling. This is the cost bound under load."
   type        = number
   default     = 2
 }
 
-variable "service_custom_domain" {
-  description = "Domain for the API, or null for the default *.awsapprunner.com hostname."
+variable "use_fargate_spot" {
+  description = "Run tasks on Fargate Spot: ~70% cheaper, reclaimable with two minutes' notice."
+  type        = bool
+  default     = false
+}
+
+variable "api_certificate_arn" {
+  description = <<-DESC
+    ACM certificate for the API's HTTPS listener, in *this* region — not us-east-1
+    like CloudFront's.
+
+    Without it the API is HTTP only, and the frontend cannot call it: the frontend
+    is served over HTTPS and a browser will not let an HTTPS page request an HTTP
+    origin. Needs a domain, because no certificate can be issued for an ALB's own
+    hostname.
+  DESC
   type        = string
   default     = null
+}
+
+variable "api_domain" {
+  description = "Domain pointed at the load balancer, used only to build the api_url output. The DNS record itself is not managed here."
+  type        = string
+  default     = null
+}
+
+variable "alb_deletion_protection" {
+  description = "Refuse to delete the load balancer, which also blocks `terraform destroy`."
+  type        = bool
+  default     = false
+}
+
+variable "enable_execute_command" {
+  description = <<-DESC
+    Allow `aws ecs execute-command` into a running task.
+
+    The only way into the VPC: a shell in the container, from which psql reaches
+    Aurora through the same security group the application uses. No bastion, no
+    public database endpoint. Also a way to read every secret the task holds, so
+    every session is logged to CloudTrail and who may do it is decided by IAM on
+    the caller.
+  DESC
+  type        = bool
+  default     = true
+}
+
+variable "enable_container_insights" {
+  description = "Per-task CPU, memory and network metrics. Billed as custom CloudWatch metrics; without it the cluster is close to unobservable."
+  type        = bool
+  default     = true
 }
 
 variable "forwarded_allow_ips" {
   description = <<-DESC
     Peers whose X-Forwarded-For header uvicorn will trust, as FORWARDED_ALLOW_IPS.
 
-    It has to be set to something. App Runner terminates TLS and forwards to the
-    container over plain HTTP, so without this every request arrives from App
-    Runner's forwarder as far as the application is concerned — and the rate
-    limiter keys on the client address, which would make one global bucket out of
-    what is meant to be a per-client throttle. Every log line's client field
-    becomes the same address too.
+    It has to be set to something. The load balancer terminates TLS and forwards
+    over plain HTTP, so without this every request arrives from the balancer as
+    far as the application is concerned — and the rate limiter keys on the client
+    address, which would make one global bucket out of what is meant to be a
+    per-client throttle. Every log line's client field becomes the same address too.
 
-    "*" — which the repository's README warns against in general, correctly —
-    is the right answer *here specifically*, for a reason particular to App
-    Runner: the forwarder's address is inside AWS's managed network, is not
-    published, and changes. There is no address to name. What makes trusting it
-    safe is that the container has no reachable listener except App Runner's
-    ingress: the service's egress is the VPC connector, its ingress is App
-    Runner's own endpoint, and nothing in the VPC can route to the container. So
-    the only peer that can set the header is the one whose header we want.
+    "*" — which the repository's README warns against in general, correctly — is
+    the working answer here. The balancer's nodes take addresses from the public
+    subnets and change as it scales, and uvicorn matches this list literally
+    rather than by CIDR, so there is no stable set of addresses to name. What
+    makes trusting the header safe is the tasks' security group: it admits the
+    load balancer on the application port and nothing else, so the balancer is
+    the only peer that can set the header.
 
-    That argument stops holding the moment the service is fronted by something
-    else, or moved onto ECS behind a load balancer whose address *is* knowable.
-    Then this becomes that address, and not a wildcard.
+    One thing worth verifying against the pinned uvicorn rather than taking on
+    faith. An ALB *appends* the real peer to X-Forwarded-For and does not strip
+    what the client sent, so a request carrying a forged header arrives as
+    "1.2.3.4, <real client>". Reading the rightmost entry gives the truth;
+    reading the leftmost gives the forgery, and with it a client-controlled rate
+    limit bucket. Check which end uvicorn's ProxyHeadersMiddleware takes.
   DESC
   type        = string
   default     = "*"
@@ -174,13 +264,12 @@ variable "forwarded_allow_ips" {
 
 variable "log_retention_days" {
   description = <<-DESC
-    Retention to put on the service's CloudWatch log groups.
+    Retention on the task's log group.
 
-    Not applied by `terraform apply`: App Runner creates those groups itself,
-    named after a service id that does not exist until the service does, and it
-    will not adopt a group Terraform made first. The value is here because it is
-    a per-environment decision that belongs in version control; the
-    log_retention_commands output turns it into the two commands that apply it.
+    Actually applied at apply time, unlike under App Runner: the awslogs driver
+    writes to a group this stack creates, so Terraform owns its retention. App
+    Runner named its log groups after a service id that could not exist until the
+    service did, which made this a manual step forever.
   DESC
   type        = number
   default     = 30

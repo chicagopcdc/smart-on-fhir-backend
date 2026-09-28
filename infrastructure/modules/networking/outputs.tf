@@ -9,13 +9,35 @@ output "vpc_cidr" {
 }
 
 output "public_subnet_ids" {
-  description = "Public subnet ids, in AZ order."
+  description = "Public subnet ids, in AZ order. The load balancer always spans these."
   value       = aws_subnet.public[*].id
 }
 
 output "private_subnet_ids" {
-  description = "Private subnet ids, in AZ order. The database subnet group and the VPC connector both draw from these."
+  description = "Private subnet ids, in AZ order. The database subnet group draws from these, and so do the tasks when NAT is enabled."
   value       = aws_subnet.private[*].id
+}
+
+output "ecs_task_subnet_ids" {
+  description = <<-DESC
+    Where the application's tasks run: the public subnets by default, the private
+    ones when NAT is enabled. Paired with assign_public_ip, which has to agree
+    with it — which is why both are decided here rather than in the ECS module.
+  DESC
+  value       = local.ecs_task_subnet_ids
+}
+
+output "assign_public_ip" {
+  description = <<-DESC
+    Whether the tasks should be given a public address.
+
+    True when there is no NAT gateway, and it is not optional in that case: a
+    Fargate task in a public subnet with no public IP cannot reach the internet,
+    cannot pull its own image from ECR, and cannot read its secrets. This is the
+    capability App Runner's VPC connector lacked, and the reason this stack needs
+    no NAT.
+  DESC
+  value       = local.assign_public_ip
 }
 
 output "availability_zones" {
@@ -23,26 +45,28 @@ output "availability_zones" {
   value       = local.azs
 }
 
+output "alb_security_group_id" {
+  description = "Security group on the load balancer; admits 80 and 443 from alb_ingress_cidrs."
+  value       = aws_security_group.alb.id
+}
+
+output "ecs_tasks_security_group_id" {
+  description = "Security group on the tasks; admits the load balancer on the application port and nothing else."
+  value       = aws_security_group.ecs_tasks.id
+}
+
 output "rds_security_group_id" {
-  description = "Security group the database attaches to; admits Postgres from the VPC connector only."
+  description = "Security group the database attaches to; admits Postgres from the tasks only."
   value       = aws_security_group.rds.id
-}
-
-output "app_runner_vpc_connector_security_group_id" {
-  description = "Security group on the VPC connector's ENIs."
-  value       = aws_security_group.app_runner_vpc_connector.id
-}
-
-output "vpc_connector_arn" {
-  description = "ARN of the App Runner VPC connector, for the App Runner service's egress configuration."
-  value       = aws_apprunner_vpc_connector.this.arn
 }
 
 output "has_internet_egress" {
   description = <<-DESC
-    Whether the private subnets can reach the internet. The App Runner module
-    reads this to fail the plan rather than deploy a service that would come up
-    and then be unable to reach any EHR.
+    Whether the tasks can reach the internet at all, by either route — a public
+    IP through the internet gateway, or NAT. Always true as the module is
+    written; it exists so the ECS module can refuse to deploy a service that
+    would come up and then be unable to reach any EHR, if that ever stops being
+    the case.
   DESC
-  value       = var.enable_nat_gateway
+  value       = local.assign_public_ip || var.enable_nat_gateway
 }

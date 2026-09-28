@@ -3,19 +3,32 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "cluster_name" {
+  description = "Name of the ECS cluster, used to address the service in the deploy role's policy. Must match what the ecs module is given; both come from the same root local."
+  type        = string
+}
+
+variable "service_name" {
+  description = "Name of the ECS service and task definition family. Must match what the ecs module is given."
+  type        = string
+}
+
 variable "ecr_repository_arn" {
-  description = "Repository the App Runner access role may pull from."
+  description = "Repository the execution role may pull from and the deploy role may push to."
   type        = string
 }
 
 variable "secret_arns" {
   description = <<-DESC
-    Secrets the running service may read, as a list of ARNs.
+    Secrets the task's environment is populated from, as a list of ARNs.
 
-    Listed one by one rather than granted as a prefix wildcard. A wildcard on
-    \"smart-on-fhir-prod/*\" would quietly extend to every secret added under
-    that prefix later, including ones belonging to something that is not this
-    service; naming them means a new secret is unreadable until someone says so.
+    Granted to the *execution* role, not the task role: the ECS agent resolves
+    them before the container starts, so the application never calls Secrets
+    Manager and does not need to be able to.
+
+    Listed one by one rather than as a prefix wildcard. A wildcard on
+    \"smart-on-fhir-prod/*\" would quietly extend to every secret added under that
+    prefix later, including ones belonging to something that is not this service.
   DESC
   type        = list(string)
   default     = []
@@ -27,20 +40,27 @@ variable "secrets_kms_key_arn" {
   default     = null
 }
 
-variable "service_name" {
-  description = "Name of the App Runner service, used to address the log groups it creates. Must match what the app_runner module is given."
-  type        = string
+variable "enable_execute_command" {
+  description = <<-DESC
+    Grant the task role the SSM channels `aws ecs execute-command` needs.
+
+    Must agree with the ecs module's own enable_execute_command: the service
+    setting opens the door and this is the key. With the setting on and this off,
+    every exec attempt fails with an error that names neither.
+  DESC
+  type        = bool
+  default     = true
 }
 
 variable "github_repository" {
   description = <<-DESC
-    \"owner/repo\" whose Actions workflows may assume the deploy role, or null
-    to create no deploy role at all.
+    \"owner/repo\" whose Actions workflows may assume the deploy role, or null to
+    create no deploy role at all.
 
-    The role is assumed through GitHub's OIDC provider, so CI holds no long-
-    lived AWS key. That is the reason to prefer it to an IAM user: a leaked
-    access key is valid until someone notices, and a leaked OIDC token is valid
-    for the length of one job.
+    The role is assumed through GitHub's OIDC provider, so CI holds no long-lived
+    AWS key. That is the reason to prefer it to an IAM user: a leaked access key
+    is valid until someone notices, and a leaked OIDC token is valid for the
+    length of one job.
   DESC
   type        = string
   default     = null
@@ -55,11 +75,11 @@ variable "github_deploy_ref_patterns" {
   description = <<-DESC
     Which git refs may assume the deploy role, as GitHub OIDC subject claims.
 
-    This is the whole access control on deployment. \"repo:owner/repo:*\" would
-    let a pull request from a fork — which runs workflow code the fork controls —
+    This is the whole access control on deployment. \"repo:owner/repo:*\" would let
+    a pull request from a fork — which runs workflow code the fork controls —
     assume the role, so the default names a branch. An environment claim
-    (\"repo:owner/repo:environment:prod\") is stricter still, because it can be
-    put behind a required reviewer in GitHub.
+    (\"repo:owner/repo:environment:prod\") is stricter still, because it can be put
+    behind a required reviewer in GitHub.
   DESC
   type        = list(string)
   default     = ["ref:refs/heads/main"]

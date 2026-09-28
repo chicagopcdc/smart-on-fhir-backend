@@ -23,56 +23,84 @@ variable "vpc_cidr" {
 variable "az_count" {
   description = <<-DESC
     How many availability zones to spread the subnets across. Two is the
-    minimum Aurora's DB subnet group accepts, and the minimum that lets a
-    single AZ failure leave a writer somewhere to fail over to.
+    minimum Aurora's DB subnet group accepts, the minimum an ALB accepts, and
+    the minimum that lets a single AZ failure leave a writer somewhere to fail
+    over to.
   DESC
   type        = number
   default     = 2
 
   validation {
     condition     = var.az_count >= 2 && var.az_count <= 4
-    error_message = "az_count must be between 2 and 4; Aurora requires at least two and this stack has no use for more than four."
+    error_message = "az_count must be between 2 and 4; Aurora and the load balancer both require at least two, and this stack has no use for more than four."
   }
 }
 
 variable "enable_nat_gateway" {
   description = <<-DESC
-    Whether to give the private subnets a route to the internet.
+    Give the private subnets a route to the internet, and move the ECS tasks
+    into them.
 
-    This has to be on for the backend to work. App Runner's VPC connector puts
-    the service's egress inside the VPC *wholesale* — once a connector is
-    attached, outbound traffic no longer leaves through App Runner's own managed
-    network, and an ENI in a private subnet with no NAT route can reach nothing
-    outside the VPC. The service talks to Epic, Cerner and the OIDC issuer over
-    the public internet on every authorization and every token refresh, so
-    turning this off is only useful for a plan that provisions the network
-    without intending to run the service against it.
+    **Off by default, and that default is the whole reason this stack runs on
+    ECS rather than App Runner.**
 
-    Putting the connector in a *public* subnet does not avoid the NAT: the ENI
-    it creates there is never assigned a public IP, so it has no path out either.
-  DESC
-  type        = bool
-  default     = true
-}
+    A Fargate task can be given a public IP. That one capability is what removes
+    the NAT gateway: a task in a public subnet with `assign_public_ip = true`
+    reaches Epic, Cerner and the identity provider straight through the internet
+    gateway, and reaches Aurora in the private subnets over the VPC's local
+    route. Both destinations work, and neither needs a NAT.
 
-variable "single_nat_gateway" {
-  description = <<-DESC
-    Route every private subnet through one NAT gateway instead of one per AZ.
+    App Runner could not do this. Its VPC connector's network interfaces are
+    never assigned a public address, and an interface with no public address has
+    nothing an internet gateway can translate — so attaching a connector to
+    reach Aurora took away the internet access the service previously had, and
+    the only way back was a NAT gateway at about $32/month per AZ.
 
-    A NAT gateway is billed hourly whether or not anything crosses it, so this
-    is the difference between one standing charge and az_count of them. The
-    trade is a single point of failure and a cross-AZ data path: if that AZ
-    goes, the backend loses its route to the EHRs even though App Runner is
-    still up. Reasonable in dev, wrong in prod.
+    Turning this on buys the classic layout instead: tasks in private subnets
+    with no public address at all, reaching the internet through NAT. The
+    security boundary is the same either way — it is the task security group,
+    which admits nothing but the load balancer — but a task without a public IP
+    cannot be exposed by a later mistake in that group. That is what the money
+    buys. See `ecs_task_subnet_ids` and `assign_public_ip` in the outputs.
   DESC
   type        = bool
   default     = false
 }
 
+variable "single_nat_gateway" {
+  description = <<-DESC
+    When NAT is enabled, route every private subnet through one gateway instead
+    of one per AZ. Halves a standing charge and accepts a single point of failure
+    for the route to every EHR. Ignored when enable_nat_gateway is false.
+  DESC
+  type        = bool
+  default     = true
+}
+
+variable "app_port" {
+  description = "Port the application container listens on, opened from the load balancer's security group to the tasks'."
+  type        = number
+  default     = 8000
+}
+
 variable "database_port" {
-  description = "TCP port the database listens on, opened from the connector's security group to the database's."
+  description = "TCP port the database listens on, opened from the tasks' security group to the database's."
   type        = number
   default     = 5432
+}
+
+variable "alb_ingress_cidrs" {
+  description = <<-DESC
+    Who may reach the load balancer. The whole internet by default, because the
+    frontend is served from CloudFront and a clinician's browser calls the API
+    directly from wherever they are.
+
+    Narrowing it is the one lever that makes the API not-public without a
+    rewrite — a hospital's egress ranges, or a VPN's — and it is worth
+    remembering that it exists.
+  DESC
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "tags" {

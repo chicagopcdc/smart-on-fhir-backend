@@ -1,11 +1,15 @@
 # The network the backend runs in.
 #
-# Three things live here that could each argue for their own module, and are
-# together because they are meaningless apart: the VPC and its subnets, the two
-# security groups that describe who may talk to whom, and the App Runner VPC
-# connector that is the only thing ever attached to the private subnets. The
-# connector is the seam between this module and the service — the App Runner
-# module takes its ARN and knows nothing else about the network.
+# The VPC and its subnets, and the three security groups that describe who may
+# talk to whom: the load balancer, the ECS tasks behind it, and the database
+# behind them. They are in one module because they are meaningless apart — a
+# subnet with no rule about what may enter it describes nothing.
+#
+# Where the tasks actually run is this module's decision, not the ECS module's,
+# because it is a routing question: with no NAT gateway they go in the public
+# subnets and carry public IPs so they can reach the EHRs directly; with NAT
+# they go in the private subnets and carry none. `ecs_task_subnet_ids` and
+# `assign_public_ip` are the two outputs that carry that decision forward.
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -31,9 +35,17 @@ locals {
   public_subnet_cidrs  = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i)]
   private_subnet_cidrs = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i + 10)]
 
-  # One NAT gateway per AZ, or one shared by all of them. Computed once here so
-  # the gateway, its EIP and the route that points at it cannot disagree.
+  # One NAT gateway per AZ, or one shared by all of them, or none — which is the
+  # default. Computed once here so the gateway, its EIP and the route that points
+  # at it cannot disagree.
   nat_gateway_count = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : var.az_count) : 0
+
+  # Where the tasks run, and whether they get a public address. The two always
+  # move together: assign_public_ip only works in a subnet with a route to the
+  # internet gateway, and a task in a private subnet without NAT can reach
+  # nothing outside the VPC. Deciding both here is what stops them diverging.
+  ecs_task_subnet_ids = var.enable_nat_gateway ? aws_subnet.private[*].id : aws_subnet.public[*].id
+  assign_public_ip    = !var.enable_nat_gateway
 }
 
 
@@ -61,10 +73,15 @@ resource "aws_internet_gateway" "this" {
 
 # --- public tier ------------------------------------------------------------
 #
-# Nothing the application runs lives out here. The public subnets exist to hold
-# the NAT gateways and to give the route table something to attach the internet
-# gateway to; if the frontend ever moves off S3+CloudFront onto something with
-# a load balancer, this is where that load balancer goes.
+# The load balancer always lives here, and by default so do the ECS tasks — with
+# public IPs, which is what lets them reach Epic without a NAT gateway. When NAT
+# is enabled the tasks move to the private subnets and these hold the load
+# balancer and the gateways only.
+#
+# "Public subnet" names a routing property, not a security posture. Nothing out
+# here is reachable from the internet because of where it sits; it is reachable
+# because a security group says so, and the tasks' group admits the load balancer
+# and nothing else.
 
 resource "aws_subnet" "public" {
   count = var.az_count
@@ -73,9 +90,12 @@ resource "aws_subnet" "public" {
   cidr_block        = local.public_subnet_cidrs[count.index]
   availability_zone = local.azs[count.index]
 
-  # Off deliberately. Only NAT gateways are placed here, and they carry their
-  # own Elastic IP; anything else that lands in a public subnet should have to
-  # ask for a public address rather than receive one because of where it sits.
+  # Off, and it is not the setting that gives the tasks their public addresses —
+  # that is `assign_public_ip` on the ECS service's network configuration, which
+  # is a property of the task rather than of the subnet. This one only affects
+  # EC2 instances launched here, of which there are none. Leaving it off means
+  # anything that does land here has to ask for a public address rather than
+  # receive one for sitting in the wrong place.
   map_public_ip_on_launch = false
 
   tags = merge(var.tags, {
@@ -131,8 +151,8 @@ resource "aws_nat_gateway" "this" {
 
 # --- private tier -----------------------------------------------------------
 #
-# The database and the App Runner connector's ENIs. Reachable from inside the
-# VPC only; outbound traffic leaves through NAT if there is one.
+# Always the database; the ECS tasks too when NAT is enabled. Reachable from
+# inside the VPC only, and with no route out at all unless a NAT gateway exists.
 
 resource "aws_subnet" "private" {
   count = var.az_count
@@ -180,21 +200,33 @@ resource "aws_route_table_association" "private" {
 
 # --- who may talk to whom ---------------------------------------------------
 #
-# Two groups, and the rules between them are written as separate resources
-# rather than inline blocks. Inline ingress/egress on aws_security_group would
-# make each group's definition depend on the other's id, which is a cycle;
-# split out, the groups are created first and the rules reference both.
+# Three groups, in a chain: the internet may reach the load balancer, the load
+# balancer may reach the tasks, the tasks may reach the database. Nothing skips
+# a link.
+#
+# The rules are separate resources rather than inline ingress/egress blocks.
+# Inline, each group's definition would depend on the next one's id, which is a
+# cycle; split out, the groups are created first and the rules reference both.
 
-resource "aws_security_group" "app_runner_vpc_connector" {
-  name        = "${var.name_prefix}-apprunner-vpc-connector"
-  description = "Egress for the App Runner service: the database, and the EHR and IdP endpoints it calls."
+resource "aws_security_group" "alb" {
+  name        = "${var.name_prefix}-alb"
+  description = "Public entry point: HTTP and HTTPS from the internet, forwarding to the tasks."
   vpc_id      = aws_vpc.this.id
 
-  tags = merge(var.tags, { Name = "${var.name_prefix}-apprunner-vpc-connector" })
+  tags = merge(var.tags, { Name = "${var.name_prefix}-alb" })
 
-  # The connector holds a reference to this group, and AWS refuses to delete a
-  # group that is still attached. Creating the replacement first lets the
-  # connector move onto it before the old one is removed.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_security_group" "ecs_tasks" {
+  name        = "${var.name_prefix}-ecs-tasks"
+  description = "The application containers: in from the load balancer, out to the database and to the EHR and IdP endpoints."
+  vpc_id      = aws_vpc.this.id
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-ecs-tasks" })
+
   lifecycle {
     create_before_destroy = true
   }
@@ -202,7 +234,7 @@ resource "aws_security_group" "app_runner_vpc_connector" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.name_prefix}-rds"
-  description = "Database ingress: the App Runner VPC connector, and nothing else."
+  description = "Database ingress: the ECS tasks, and nothing else."
   vpc_id      = aws_vpc.this.id
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-rds" })
@@ -212,12 +244,63 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# No ingress rule on the connector's group at all. App Runner terminates
-# requests on its own managed endpoint and never routes inbound traffic through
-# the connector, so an ingress rule here would open a path nothing arrives on.
 
-resource "aws_vpc_security_group_egress_rule" "connector_to_database" {
-  security_group_id            = aws_security_group.app_runner_vpc_connector.id
+# Load balancer, inbound.
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+
+  # Open even when a certificate is configured and this port does nothing but
+  # redirect. A browser that is sent to http:// has to be able to arrive
+  # somewhere in order to be told to go to https:// instead; closing 80 turns a
+  # redirect into a connection timeout.
+  description = "HTTP, redirected to HTTPS when a certificate is configured"
+  cidr_ipv4   = each.value
+  from_port   = 80
+  to_port     = 80
+  ip_protocol = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS"
+  cidr_ipv4         = each.value
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "Forward to the application containers"
+  referenced_security_group_id = aws_security_group.ecs_tasks.id
+  from_port                    = var.app_port
+  to_port                      = var.app_port
+  ip_protocol                  = "tcp"
+}
+
+
+# Tasks.
+
+resource "aws_vpc_security_group_ingress_rule" "tasks_from_alb" {
+  security_group_id = aws_security_group.ecs_tasks.id
+
+  # The only ingress rule on the tasks, and the reason a public subnet is not a
+  # public container. With a public IP and no rule admitting the internet, the
+  # address is routable and the port is not.
+  description                  = "Application traffic from the load balancer"
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = var.app_port
+  to_port                      = var.app_port
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "tasks_to_database" {
+  security_group_id            = aws_security_group.ecs_tasks.id
   description                  = "Postgres to the Aurora cluster"
   referenced_security_group_id = aws_security_group.rds.id
   from_port                    = var.database_port
@@ -225,26 +308,32 @@ resource "aws_vpc_security_group_egress_rule" "connector_to_database" {
   ip_protocol                  = "tcp"
 }
 
-resource "aws_vpc_security_group_egress_rule" "connector_to_internet" {
-  security_group_id = aws_security_group.app_runner_vpc_connector.id
+resource "aws_vpc_security_group_egress_rule" "tasks_to_internet" {
+  security_group_id = aws_security_group.ecs_tasks.id
 
-  # Every SMART authorization, token refresh and FHIR read goes to a host the
-  # provider registration names, and the OIDC issuer's discovery and JWKS
-  # documents are fetched the same way. The set of destinations is open by
-  # construction — a provider added in configuration must not need a security
-  # group change to be reachable — so this is a destination CIDR rather than a
-  # prefix list. The port is the bound that is worth keeping: 443 only.
-  description = "HTTPS to EHR FHIR endpoints and the OIDC issuer"
+  # Four kinds of destination share this rule, and all four are HTTPS to a host
+  # this stack does not choose: the EHRs a provider registration names, the OIDC
+  # issuer's discovery and JWKS documents, and — because the tasks reach AWS's
+  # own public endpoints rather than going through interface endpoints — ECR,
+  # Secrets Manager and CloudWatch Logs.
+  #
+  # So this is a destination CIDR rather than a prefix list: a provider added in
+  # configuration must not need a security group change to become reachable. The
+  # port is the bound worth keeping, and 443 is the only one anything here uses.
+  description = "HTTPS to EHR FHIR endpoints, the OIDC issuer, and the AWS APIs the task depends on"
   cidr_ipv4   = "0.0.0.0/0"
   from_port   = 443
   to_port     = 443
   ip_protocol = "tcp"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "database_from_connector" {
+
+# Database.
+
+resource "aws_vpc_security_group_ingress_rule" "database_from_tasks" {
   security_group_id            = aws_security_group.rds.id
-  description                  = "Postgres from the App Runner VPC connector"
-  referenced_security_group_id = aws_security_group.app_runner_vpc_connector.id
+  description                  = "Postgres from the ECS tasks"
+  referenced_security_group_id = aws_security_group.ecs_tasks.id
   from_port                    = var.database_port
   to_port                      = var.database_port
   ip_protocol                  = "tcp"
@@ -254,29 +343,3 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_connector" {
 # outbound; one created here starts with none, and Aurora has nowhere it needs
 # to reach on its own — backups, logs and monitoring all go through paths the
 # service manages rather than through this group.
-
-
-# --- the seam to App Runner -------------------------------------------------
-
-resource "aws_apprunner_vpc_connector" "this" {
-  # A connector is immutable: changing its subnets or security groups cannot be
-  # done in place, so Terraform replaces it. App Runner keeps the name and
-  # increments a revision, which is why the same name can be reused across
-  # replacements — and why create_before_destroy below is enough to move a live
-  # service onto the new revision before the old one goes.
-  vpc_connector_name = substr("${var.name_prefix}-connector", 0, 40)
-
-  # Private subnets, per AWS's own constraint: the connector's ENIs get no
-  # public IP, so a public subnet would leave them with no route out. Everything
-  # they reach outside the VPC goes through NAT — see enable_nat_gateway.
-  subnets         = aws_subnet.private[*].id
-  security_groups = [aws_security_group.app_runner_vpc_connector.id]
-
-  tags = merge(var.tags, { Name = "${var.name_prefix}-connector" })
-
-  # Same reason as the security groups: a service still pointing at this
-  # connector pins it, so the replacement has to exist before the old one goes.
-  lifecycle {
-    create_before_destroy = true
-  }
-}

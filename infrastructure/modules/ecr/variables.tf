@@ -13,11 +13,11 @@ variable "image_tag_mutability" {
   description = <<-DESC
     IMMUTABLE refuses to move a tag that already exists.
 
-    That is what makes a deployed tag mean one image forever: App Runner records
-    the image identifier it was pointed at, and with mutable tags "the thing
-    running in prod" and "what :v1.4.0 resolves to today" can silently differ.
-    The cost is that CI cannot re-push a tag after a failed run — it has to push
-    a new one, which is the correct behaviour anyway.
+    That is what makes a deployed tag mean one image forever: a task definition
+    records the image identifier it was registered with, and with mutable tags "the
+    thing running in prod" and "what :v1.4.0 resolves to today" can silently
+    differ. The cost is that CI cannot re-push a tag after a failed run — it has to
+    push a new one, which is the correct behaviour anyway.
   DESC
   type        = string
   default     = "IMMUTABLE"
@@ -60,10 +60,9 @@ variable "pull_principal_arns" {
   description = <<-DESC
     Role ARNs granted pull access through the repository policy.
 
-    App Runner's ECR access role is granted pull by its own IAM policy, which is
-    enough within this account. This exists for the case the repository policy
-    is the only lever: a build account pushing in, or a second account pulling
-    the image out.
+    The ECS execution role is granted pull by its own IAM policy, which is enough
+    within this account. This exists for the case the repository policy is the only
+    lever: a build account pushing in, or a second account pulling the image out.
   DESC
   type        = list(string)
   default     = []

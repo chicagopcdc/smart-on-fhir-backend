@@ -1,0 +1,68 @@
+# Checks the Terraform on every pull request that touches it.
+#
+# Deliberately does not run `terraform plan`. A plan needs read access to the whole
+# account and the state bucket, which means an OIDC role a pull request from a fork
+# could assume — and a plan's output names every resource in the environment. So
+# this is the half that needs no credentials at all: formatting, and whether the
+# configuration is internally consistent.
+#
+# What it therefore does not catch, and what the first real plan still has to:
+# invalid Fargate cpu/memory pairings, IAM policies AWS rejects, and engine
+# versions a region does not offer.
+
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # Pinned, because `terraform fmt` is a moving target: a newer version
+          # can reformat a file an older one considered clean, which would fail
+          # this job on code nobody touched.
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: fmt
+        run: terraform fmt -check -recursive -diff infrastructure
+
+      - name: validate
+        run: |
+          # -backend=false so no state bucket and no credentials are needed. Both
+          # roots are checked: they are meant to be identical, and a change applied
+          # to one of them only is the failure mode most worth catching.
+          for env in infrastructure/envs/*/; do
+            echo "::group::$env"
+            terraform -chdir="$env" init -backend=false -input=false
+            terraform -chdir="$env" validate
+            echo "::endgroup::"
+          done
+
+      - name: roots have not drifted
+        run: |
+          # envs/dev and envs/prod differ only in terraform.tfvars and backend.hcl.
+          # Everything else is meant to be byte-identical, so that "what is in prod"
+          # is answerable by reading one file.
+          for file in main.tf variables.tf outputs.tf versions.tf; do
+            if ! diff -u "infrastructure/envs/dev/$file" "infrastructure/envs/prod/$file"; then
+              echo "::error file=infrastructure/envs/prod/$file::$file differs between dev and prod; a change to one root belongs in the other"
+              exit 1
+            fi
+          done

@@ -4,7 +4,7 @@ output "repository_name" {
 }
 
 output "repository_arn" {
-  description = "ARN of the repository, for the pull grant on App Runner's access role."
+  description = "ARN of the repository, for the pull grant on the ECS execution role and the push grant on the deploy role."
   value       = aws_ecr_repository.this.arn
 }
 

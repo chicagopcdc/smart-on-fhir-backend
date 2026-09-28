@@ -1,10 +1,10 @@
 # Where the backend image lives.
 #
-# One repository, private, in the same region as the App Runner service that
-# pulls from it. App Runner can deploy from a public registry or from ECR, and
-# from ECR it can do so automatically on push; cross-region pulls are not
-# supported for the automatic path, which is why region is not a variable here —
-# it comes from the provider, and the provider is the environment's region.
+# One repository, private, in the same region as the ECS service that pulls from
+# it. Region is not a variable here: it comes from the provider, and the provider
+# is the environment's region. A cross-region pull works but is billed as
+# inter-region transfer on every task start, which on a service that scales is a
+# cost with no upside.
 
 resource "aws_ecr_repository" "this" {
   name                 = "${var.name_prefix}-${var.repository_name}"
