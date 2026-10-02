@@ -135,8 +135,15 @@ variable "alb_security_group_ids" {
   type        = list(string)
 }
 
+# Flagged by tflint as unused, and it is not: its own validation block below is the
+# entire reason it exists. The rule looks for the variable in an expression
+# somewhere in the module, and a self-referential validation does not count — so
+# this is a false positive, and removing the variable would remove the check.
+#
+# The annotation has to be on the line immediately above the declaration.
+# tflint-ignore: terraform_unused_declarations
 variable "has_internet_egress" {
-  description = "Whether the tasks can reach the internet by either route. Passed through from the networking module so this module can refuse to build a service that could not reach any EHR."
+  description = "Whether the tasks can reach the internet by either route. Passed through from the networking module so this module can refuse to build a service that could not reach any EHR. Its only use is the validation below, which is the point of it."
   type        = bool
   default     = true
 

@@ -6,9 +6,10 @@
 # this is the half that needs no credentials at all: formatting, and whether the
 # configuration is internally consistent.
 #
-# What it therefore does not catch, and what the first real plan still has to:
-# invalid Fargate cpu/memory pairings, IAM policies AWS rejects, and engine
-# versions a region does not offer.
+# tflint with the AWS ruleset covers part of what validate cannot — it knows which
+# Fargate cpu/memory pairings exist and which instance classes are real — so between
+# them the only things left for the first real plan are IAM policies AWS rejects,
+# engine versions a region does not offer, and anything that depends on account state.
 
 name: terraform
 
@@ -54,6 +55,23 @@ jobs:
             terraform -chdir="$env" validate
             echo "::endgroup::"
           done
+
+      - name: tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      - name: tflint --recursive
+        run: |
+          # --recursive lints every module and both roots. The AWS plugin is
+          # downloaded by --init; the config lives in infrastructure/.tflint.hcl.
+          cd infrastructure
+          tflint --init
+          tflint --recursive
+        env:
+          # The plugin is fetched from GitHub releases, which is rate-limited
+          # without a token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: roots have not drifted
         run: |
