@@ -1,0 +1,198 @@
+# Builds the backend image, migrates the database, and rolls the ECS service.
+#
+# Three things about the shape of this, because none of them is obvious:
+#
+# 1. No long-lived AWS key. The job assumes a role through GitHub's OIDC provider,
+#    scoped in IAM to this repository and to the refs named in
+#    github_deploy_ref_patterns. A token that escapes a runner is valid for the
+#    length of one job.
+#
+# 2. No Terraform state access. Everything the job needs to address the service —
+#    cluster, families, subnets, security groups — is read from an SSM parameter
+#    Terraform publishes. So a network change needs no change here, and CI cannot
+#    read the database password that lives in state.
+#
+# 3. Terraform owns configuration; this owns which image runs. The render step
+#    starts from the *latest* revision of the family, which is the one Terraform
+#    registered, so an environment variable or secret changed in Terraform is
+#    picked up by the next deploy. The service has ignore_changes on its task
+#    definition so that the next `terraform apply` does not put the old image back.
+
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  id-token: write   # required to request the OIDC token
+  contents: read
+
+concurrency:
+  # One deploy per environment at a time. Two overlapping deploys would race the
+  # migration against each other and register revisions out of order.
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Gate prod behind a GitHub environment so a required reviewer can be attached
+    # to it. The IAM trust policy can be narrowed to the matching subject claim —
+    # "repo:owner/repo:environment:prod" — which is stricter than a branch, because
+    # a branch cannot ask a human first.
+    environment: ${{ inputs.environment }}
+
+    env:
+      AWS_REGION: us-east-1
+      SERVICE: smart-on-fhir-${{ inputs.environment }}-backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+
+      - name: Read the deploy manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+
+          # Published by Terraform; see modules/ecs. Read once into the job's
+          # environment so every later step addresses the same resources.
+          MANIFEST=$(aws ssm get-parameter --name "/${SERVICE}/deploy" \
+                       --query 'Parameter.Value' --output text)
+
+          {
+            echo "CLUSTER=$(jq -r .cluster <<<"$MANIFEST")"
+            echo "ECS_SERVICE=$(jq -r .service <<<"$MANIFEST")"
+            echo "APP_FAMILY=$(jq -r .task_definition_family <<<"$MANIFEST")"
+            echo "MIGRATE_FAMILY=$(jq -r .migrate_family <<<"$MANIFEST")"
+            echo "CONTAINER=$(jq -r .container_name <<<"$MANIFEST")"
+            echo "REPO=$(jq -r .image_repository_url <<<"$MANIFEST")"
+            echo "LOG_GROUP=$(jq -r .log_group <<<"$MANIFEST")"
+            echo "NETWORK=awsvpcConfiguration={subnets=[$(jq -r '.network.subnets | join(",")' <<<"$MANIFEST")],securityGroups=[$(jq -r '.network.security_groups | join(",")' <<<"$MANIFEST")],assignPublicIp=$(jq -r .network.assign_public_ip <<<"$MANIFEST")}"
+          } >> "$GITHUB_ENV"
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Build and push
+        id: image
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_SHA::12}"
+          echo "IMAGE=${REPO}:${TAG}" >> "$GITHUB_ENV"
+
+          # --platform is not optional. The task definition declares an
+          # architecture, and an image built for the other one starts and dies with
+          # an exec format error that appears nowhere but the container log. This
+          # has to agree with service_cpu_architecture in terraform.tfvars.
+          #
+          # --provenance=false because buildx otherwise pushes a multi-platform
+          # index whose manifest ECS cannot resolve to a single image.
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --tag "${REPO}:${TAG}" \
+            --cache-from "type=gha" \
+            --cache-to "type=gha,mode=max" \
+            --push \
+            .
+
+      - name: Migrate
+        run: |
+          set -euo pipefail
+
+          # Render a revision of the migration family carrying the new image,
+          # starting from the latest revision so Terraform's environment and
+          # secrets come along. The deleted fields are ones describe-task-definition
+          # returns and register-task-definition rejects.
+          aws ecs describe-task-definition --task-definition "$MIGRATE_FAMILY" \
+            --query taskDefinition > migrate.json
+
+          jq --arg image "$IMAGE" '
+            .containerDefinitions[0].image = $image
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' migrate.json > migrate-new.json
+
+          MIGRATE_ARN=$(aws ecs register-task-definition \
+                          --cli-input-json file://migrate-new.json \
+                          --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          # --launch-type FARGATE, not the cluster's default: dev runs the service
+          # on Spot, and a migration reclaimed halfway through is not a thing worth
+          # saving money on.
+          TASK_ARN=$(aws ecs run-task \
+                       --cluster "$CLUSTER" \
+                       --task-definition "$MIGRATE_ARN" \
+                       --launch-type FARGATE \
+                       --network-configuration "$NETWORK" \
+                       --started-by "gha-${GITHUB_RUN_ID}" \
+                       --query 'tasks[0].taskArn' --output text)
+
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+                        --query 'tasks[0].containers[0].exitCode' --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+                     --query 'tasks[0].stoppedReason' --output text)
+
+          # Alembic's output is the only explanation of a failure, and nobody
+          # watching a workflow should have to go to CloudWatch for it.
+          echo "::group::Migration log"
+          aws logs get-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --log-stream-name "migrate/migrate/${TASK_ARN##*/}" \
+            --query 'events[].message' --output text || echo "(no log stream)"
+          echo "::endgroup::"
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration exited ${EXIT_CODE} (${REASON}); the service was not touched."
+            exit 1
+          fi
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+
+          aws ecs describe-task-definition --task-definition "$APP_FAMILY" \
+            --query taskDefinition > app.json
+
+          jq --arg image "$IMAGE" --arg name "$CONTAINER" '
+            .containerDefinitions |= map(if .name == $name then .image = $image else . end)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' app.json > app-new.json
+
+          APP_ARN=$(aws ecs register-task-definition \
+                      --cli-input-json file://app-new.json \
+                      --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$APP_ARN" \
+            > /dev/null
+
+          # The deployment circuit breaker rolls back on its own if the new tasks
+          # never become healthy; this is what makes the *workflow* fail when that
+          # happens, instead of reporting success on a rollback.
+          echo "Waiting for the service to reach steady state..."
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$ECS_SERVICE"
+
+          echo "Deployed ${IMAGE}"

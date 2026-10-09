@@ -559,7 +559,17 @@ The API is now at http://localhost:8000, with interactive docs at http://localho
 
 ## Deploying it
 
-Two things this backend does not do for itself, both of which a deployment has to.
+There is Terraform for this in [`infrastructure/`](infrastructure/) — VPC, Aurora,
+ECR, Secrets Manager, IAM and an ECS Fargate service behind a load balancer, plus
+the S3 and CloudFront the frontend is served from. `infrastructure/README.md` is the
+deployment guide for both halves of the application, and `.github/workflows/deploy.yml`
+is the deploy.
+
+What follows is what any deployment has to arrange, whether or not it uses that
+Terraform. On ECS the load balancer is the proxy: it handles the first of the two,
+and the second is why the stack sets `FORWARDED_ALLOW_IPS` — with the caveat noted
+there about which end of `X-Forwarded-For` uvicorn reads.
+
 
 ### TLS, and where it terminates
 
