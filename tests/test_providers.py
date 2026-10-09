@@ -42,3 +42,77 @@ def test_a_provider_without_credentials_is_omitted():
     assert {p["provider"] for p in listed} == {"READY"}  # NOCREDS dropped, dupe collapsed
     assert listed[0]["iss"] == "https://ready.example/fhir"
     assert listed[0]["name"] == "Ready"
+
+
+def test_configured_providers_empty_issuers_and_trailing_slashes():
+    """Verify that empty/falsey issuers are ignored, trailing slashes are stripped,
+    and provider names are properly capitalized from snake_case / uppercase keys.
+    """
+    listed = config.configured_providers(
+        {
+            "MY_CUSTOM_EHR": {
+                "client_id": "client-123",
+                "allowed_issuers": [
+                    "",
+                    None,
+                    "https://fhir.example.com/r4/",
+                    "https://fhir.example.com/r4",  # duplicate after rstrip('/')
+                ],
+            },
+            "ANOTHER_PROVIDER": {
+                "client_id": "",  # empty string client_id should be skipped
+                "allowed_issuers": ["https://other.example.com/fhir"],
+            },
+        }
+    )
+
+    assert len(listed) == 1
+    assert listed[0] == {
+        "provider": "MY_CUSTOM_EHR",
+        "iss": "https://fhir.example.com/r4",
+        "name": "My Custom Ehr",
+    }
+
+
+def test_configured_providers_deduplicates_issuers_across_providers():
+    """When multiple valid providers configure the same canonical issuer,
+    the issuer appears only once, preserving the first provider that declared it.
+    """
+    test_configs = {
+        "PRIMARY_EHR": {
+            "client_id": "pri-client",
+            "allowed_issuers": ["https://shared.example.com/fhir/"],
+        },
+        "SECONDARY_EHR": {
+            "client_id": "sec-client",
+            "allowed_issuers": ["https://shared.example.com/fhir"],
+        },
+    }
+    listed = config.configured_providers(test_configs)
+
+    assert len(listed) == 1
+    assert listed[0]["provider"] == "PRIMARY_EHR"
+    assert listed[0]["iss"] == "https://shared.example.com/fhir"
+    assert listed[0]["name"] == "Primary Ehr"
+
+
+def test_configured_providers_isolated_from_module_ehr_configs():
+    """Passing an explicit empty or custom configs dictionary does not fall back
+    to or modify module-level EHR_CONFIGS.
+    """
+    empty_listed = config.configured_providers({})
+    assert empty_listed == []
+
+    custom_listed = config.configured_providers(
+        {
+            "TEST_PROVIDER": {
+                "client_id": "cid",
+                "allowed_issuers": ["https://isolated.test/fhir"],
+            }
+        }
+    )
+    assert len(custom_listed) == 1
+    assert custom_listed[0]["provider"] == "TEST_PROVIDER"
+    assert custom_listed[0]["iss"] == "https://isolated.test/fhir"
+    assert custom_listed[0]["name"] == "Test Provider"
+
