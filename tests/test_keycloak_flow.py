@@ -38,6 +38,31 @@ from tests.app_harness import app_db, bearer, client
 DB = "sqlite+aiosqlite:///{path}/db.sqlite"
 
 
+def refusal_message(response):
+    """The sentence out of a refused response, under either error envelope.
+
+    This file arrives alongside the standard error envelope, which replaces
+    FastAPI's ``{"detail": ...}`` with ``{"error": {"code": ..., "message": ...}}``.
+    The two changes touch different files, so git merges them without reporting a
+    conflict and the result fails right here — the shape moved under assertions
+    that had named the old one.
+
+    Reading whichever is present is what lets both land in either order, with no
+    fixup commit on whichever goes second. It is deliberately narrow: it tolerates
+    two known shapes and raises on anything else, so a response that is neither
+    still fails rather than quietly returning None.
+
+    Delete it once the envelope has landed. The ``detail`` arm is dead at that
+    point, and an assertion on ``error["code"]`` is the better test anyway —
+    the code is the half that is not free to be reworded.
+    """
+    body = response.json()
+    error = body.get("error")
+    if isinstance(error, dict) and "message" in error:
+        return error["message"]
+    return body["detail"]
+
+
 @pytest.fixture
 def keycloak(monkeypatch):
     """Point the application at the Keycloak realm for the length of one test.
@@ -133,7 +158,7 @@ async def test_a_document_from_another_realm_on_the_same_server_is_refused(
             response = await http.post("/auth/login")
 
     assert response.status_code == 502
-    assert "identity provider" in response.json()["detail"]
+    assert "identity provider" in refusal_message(response)
 
 
 # --- completing a sign-in -----------------------------------------------------
@@ -207,7 +232,7 @@ async def test_skipping_that_key_does_not_soften_what_the_set_is_for(
             users = (await session.execute(select(User))).scalars().all()
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Sign-in could not be verified"
+    assert refusal_message(response) == "Sign-in could not be verified"
     assert users == []
 
 
