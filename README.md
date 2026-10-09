@@ -7,6 +7,11 @@ resources for the connected patient.
 
 ## How it works
 
+0. Optionally, the patient signs in with the deployment's identity provider — Okta or
+   Google — through `POST /auth/login` and `POST /auth/login/callback`. What comes back
+   is a session that names an *account*. Everything below then belongs to that account,
+   and is still there the next time they sign in. See
+   [Accounts and signing in](#accounts-and-signing-in).
 1. A caller posts a provider and a FHIR base URL to `POST /auth/connect`. The backend
    validates both, reads the server's SMART configuration, and returns the URL to send
    the patient to.
@@ -16,6 +21,12 @@ resources for the connected patient.
 3. The tokens are stored encrypted. What comes back is a `patientId` and an opaque
    `sessionId`, which reads the record through `GET /patients/{patientId}/resources`
    and `GET /patients/{patientId}/summary`.
+
+Step 0 is the authentication layer and steps 1–2 the authorization one. They answer
+different questions — *who are you*, and *may this application read your chart at this
+hospital* — and they are deliberately separate: signing in grants access to no health
+data at all, and consent at an EHR is given per provider, per resource type, for a
+period the patient chooses.
 
 Interactive documentation is at `/docs`.
 
@@ -59,10 +70,86 @@ every provider linked to that record on the strength of a single login — trivi
 a server like the public SMART Launcher, where any caller can select any patient with no
 credentials at all.
 
-The cost is that re-authorizing after a session expires starts a fresh record, and the
-other providers have to be linked again. The same EHR account can therefore be held under
-more than one record, each with its own token. The duplication is what keeps the records
-isolated.
+Without an account, the cost is that re-authorizing after a session expires starts a
+fresh record, and the other providers have to be linked again. The same EHR account can
+therefore be held under more than one record, each with its own token. The duplication is
+what keeps the records isolated. Signing in is what removes that cost — see below.
+
+## Accounts and signing in
+
+A session issued by `POST /auth/callback` proves one thing: that whoever holds it just
+authorized a connection. That is enough to read the record, and it was for a while the
+only identity this application had. It expires in an hour, and when it does the record
+goes with it — not deleted, but unreachable, because nothing else knew about it.
+
+An **account** fixes that. A patient signs in with the deployment's identity provider,
+and the record hangs off the account instead of off a session:
+
+```bash
+# 1. Start a sign-in. Returns the URL to send the user to.
+curl -X POST localhost:8000/auth/login
+
+# 2. The IdP redirects back to FRONTEND_HOSTNAME/auth/login/callback?code=…&state=…
+#    Post those back here to get a session.
+curl -X POST localhost:8000/auth/login/callback \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "…", "state": "…"}'
+
+# 3. Connect providers with that session. Each one joins this account's record.
+curl -X POST localhost:8000/auth/connect \
+  -H "Authorization: Bearer $SESSION_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "EPIC_SANDBOX", "iss": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"}'
+
+# 4. Weeks later, sign in again. GET /auth/me returns the same patientId,
+#    with every provider still on it.
+curl localhost:8000/auth/me -H "Authorization: Bearer $NEW_SESSION_ID"
+```
+
+One account owns one patient record — a person has a single medical history however many
+hospitals hold pieces of it. It is `null` until the account's first provider is
+connected, and `null` again if the last one is disconnected, because a record exists only
+for as long as connections hang off it.
+
+The record is resolved through the account on every request rather than frozen onto the
+session. That is what lets the session from step 2, minted before the record existed,
+reach it in step 3 without being reissued.
+
+**Identity is `(issuer, subject)`**, never email. A provider may let an address change
+hands, and two providers may both assert the same address for different people, so the
+email on an account is shown to the user and decides nothing. The account id is this
+application's own `usr_…`, not the provider's subject.
+
+**Signing out is not disconnecting.** `POST /auth/logout` ends the session presented and
+nothing else — not the account's other sessions, and not its stored connections. Ending a
+provider's access is `DELETE /patients/{patientId}/connections/{provider}`, which revokes
+at the EHR where it can.
+
+### Configuring the identity provider
+
+Any OIDC provider works. Everything but the three settings below is read from the
+issuer's `.well-known/openid-configuration` at runtime, the same way SMART endpoints
+are, so Okta and Google differ only in configuration:
+
+| | |
+| --- | --- |
+| Okta | `OIDC_ISSUER=https://<your-org>.okta.com/oauth2/default` |
+| Google | `OIDC_ISSUER=https://accounts.google.com` |
+
+Register the redirect URI `FRONTEND_HOSTNAME + /auth/login/callback` with the provider —
+it must match exactly or the provider refuses the redirect back. `OIDC_CLIENT_SECRET` is
+optional: omit it for a public client, which authenticates with PKCE alone. PKCE is sent
+either way.
+
+Login is **off unless configured**. With `OIDC_ISSUER` unset the login routes answer
+`503`, `GET /auth/providers` reports `loginEnabled: false`, and connecting works
+anonymously exactly as it did before. Set `REQUIRE_USER_LOGIN=true` once the frontend
+signs users in, and `POST /auth/connect` refuses anonymous callers — which closes the
+case where a record is created that nobody can ever get back to.
+
+The ID token is verified on every sign-in: signature against the issuer's published keys,
+then issuer, audience, expiry, and the nonce that binds it to the request that asked for
+it. A token failing any of those is refused and no account is created.
 
 ## SMART providers
 
@@ -439,7 +526,7 @@ Settings are read from the environment, and from `.env` in local development.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Async SQLAlchemy connection string for Postgres (asyncpg driver), for example `postgresql+asyncpg://postgres:devpass@localhost:5432/smartfhir`. The app will not start without it. |
 | `TOKEN_ENCRYPTION_KEY` | yes | One or more Fernet keys, comma separated, used to encrypt tokens at rest. The first key encrypts, the rest still decrypt, so you rotate by prepending a new key. Generate one with the command below. |
-| `FRONTEND_HOSTNAME` | no | Base URL of the frontend that handles the OAuth redirect. Defaults to `http://localhost:3000`. Each provider's redirect URI is this value plus `/auth/callback`. |
+| `FRONTEND_HOSTNAME` | no | Base URL of the frontend that handles the OAuth redirect. Defaults to `http://localhost:3000`. Each provider's redirect URI is this value plus `/auth/callback`, and the identity provider's is this value plus `/auth/login/callback`. |
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated browser origins allowed to call the API. Defaults to `FRONTEND_HOSTNAME`. A wildcard is not supported. |
 | `OAUTH_STATE_TTL_SECONDS` | no | How long an OAuth state row stays valid before it is swept. Defaults to 600. |
 | `APP_SESSION_TTL_SECONDS` | no | How long a session (the bearer the frontend uses to read resources) stays valid before the caller must re-authorize. Defaults to 3600. |
@@ -451,6 +538,13 @@ Settings are read from the environment, and from `.env` in local development.
 | `EPIC_ISSUER` | no | FHIR base URL of the production Epic deployment. Authorization for the `EPIC` provider is only allowed against this issuer. |
 | `CERNER_CLIENT_ID`, `CERNER_CLIENT_SECRET` | no | Client credentials for the Cerner / Oracle Health sandbox, which is registered as a confidential client. Oracle issues the secret through a Cerner Central system account, reached from the application's page in code Console. Leave either unset and the provider rejects every request, and `GET /providers` omits it. |
 | `SMART_LAUNCHER_CLIENT_ID` | no | Client id for the public SMART App Launcher. The launcher does not validate it, so a default is used when unset. |
+| `OIDC_ISSUER` | no | The identity provider users sign in with, e.g. `https://<org>.okta.com/oauth2/default` or `https://accounts.google.com`. Unset turns login off entirely: the login routes answer `503` and connecting stays anonymous. |
+| `OIDC_CLIENT_ID` | no | The client registered with that provider. Required alongside `OIDC_ISSUER` for login to be considered configured. |
+| `OIDC_CLIENT_SECRET` | no | Omit for a public client, which authenticates with PKCE alone. PKCE is sent either way. |
+| `OIDC_SCOPES` | no | Scopes requested at sign-in. Defaults to `openid profile email`. Grants no access to health data. |
+| `LOGIN_STATE_TTL_SECONDS` | no | How long a sign-in that has been started stays valid. Defaults to 600. |
+| `OIDC_CLOCK_SKEW_SECONDS` | no | Clock skew tolerated on an ID token's `exp`/`iat`. Defaults to 60. |
+| `REQUIRE_USER_LOGIN` | no | Whether `POST /auth/connect` requires being signed in. Defaults to `false`, so adding login breaks no existing frontend. |
 | `LOG_FORMAT` | no | `text` (the default) writes the line a developer reads; `json` writes one object per line for a deployment shipping logs somewhere that parses them. Neither decides what may appear in a line — see [Logs](#logs). |
 
 A provider you add yourself brings its own credential keys — see
@@ -684,7 +778,12 @@ Full request and response schemas, with examples, are at `/docs`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/auth/connect` | Start the OAuth flow. Returns the authorization URL to send the patient to. An optional session bearer links the new connection to an existing patient record. |
+| GET | `/auth/providers` | Whether this deployment can sign users in, and whether it requires it. What a frontend calls before deciding to show a sign-in button. |
+| POST | `/auth/login` | Start signing a user in. Returns the identity provider's authorization URL. `503` where no provider is configured. |
+| POST | `/auth/login/callback` | Exchange the returned `{code, state}` for a session. Returns a `sessionId` and the account, including the `patientId` it owns. |
+| GET | `/auth/me` | Who the presented bearer belongs to: the account, the record it reaches, and how long it has left. What a frontend calls on a page reload. |
+| POST | `/auth/logout` | End the presented session, and return where to end it at the identity provider too. Leaves connections and the record alone. |
+| POST | `/auth/connect` | Start the OAuth flow. Returns the authorization URL to send the patient to. An optional session bearer — from signing in, or from an earlier connection — links the new connection to an existing patient record. Required when `REQUIRE_USER_LOGIN` is set. |
 | POST | `/auth/callback` | Exchange the returned `{code, state}` for tokens. Returns a `patientId`, a `sessionId`, and the connection just made. |
 | GET | `/patients/{patientId}/resources?type=&include=&provider=` | The patient's normalized resources, per connection. Requires `Authorization: Bearer <sessionId>`. |
 | GET | `/patients/{patientId}/summary?limit=&provider=` | A clinical summary merged across the record's connections. Requires the same bearer. |
@@ -722,6 +821,12 @@ poetry run pytest
 The suite runs offline. Every outbound request is mocked, which is what makes it fast and
 what makes it fail for one reason only. What it proves is that the application is
 internally consistent with the responses recorded under `tests/fixtures/`.
+
+The sign-in tests run against a fake identity provider in `tests/idp.py` with a real RSA
+keypair, so the ID tokens they exchange are genuinely signed and genuinely verified —
+only the transport is faked. A token signed with the wrong key, minted for the wrong
+audience, or carrying another login's nonce is refused there for the same reason it would
+be in production.
 
 It cannot prove those recordings still describe the servers they came from, and twice they
 have not. ONC's endpoint list moved, then the mirror it moved to was pruned, and the

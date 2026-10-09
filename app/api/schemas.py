@@ -158,6 +158,212 @@ class CallbackResponse(APIModel):
     connection: Connection
 
 
+# --- signing in --------------------------------------------------------------
+
+
+class LoginResponse(APIModel):
+    """Where to send the user to sign in, and how long that offer stands."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "authorizationUrl": "https://example.okta.com/oauth2/default/v1/authorize?response_type=code&client_id=…&state=Yl8k…",
+                    "state": "Yl8kQq2Xb7nHc1RrTv9WdF3s",
+                    "expiresIn": 600,
+                }
+            ]
+        },
+    )
+
+    authorization_url: str = Field(
+        description="Send the user here to sign in with the identity provider. "
+        "Returned rather than redirected to, so the frontend keeps control of "
+        "the navigation."
+    )
+    state: str = Field(
+        description="The anti-CSRF nonce for this login. It comes back on the "
+        "redirect and is what `POST /auth/login/callback` is given."
+    )
+    expires_in: int = Field(
+        description="Seconds until the login attempt expires and the user has to "
+        "start again."
+    )
+
+
+class UserProfile(APIModel):
+    """The signed-in account, as much of it as a frontend has any use for."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "userId": "usr_7Kd2MnXb4qRc9TvWyLp3",
+                    "email": "avery@example.org",
+                    "displayName": "Avery Diaz",
+                    "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
+                }
+            ]
+        },
+    )
+
+    user_id: str = Field(
+        description="This application's id for the account. Stable across "
+        "sign-ins, and not the identity provider's subject.",
+        examples=["usr_7Kd2MnXb4qRc9TvWyLp3"],
+    )
+    email: str | None = Field(
+        default=None,
+        description="The address the identity provider asserts for this account. "
+        "Shown to the user; never what identifies them.",
+    )
+    display_name: str | None = Field(default=None, examples=["Avery Diaz"])
+    patient_id: str | None = Field(
+        default=None,
+        description="The patient record this account owns, or `null` before its "
+        "first provider is connected. Use it in the `/patients/{patientId}/…` paths.",
+        examples=["pat_9Fq3TnVb2mKd7sXwLp4RcYhZ"],
+    )
+
+
+class LoginCallbackResponse(APIModel):
+    """The result of a completed sign-in."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "sessionId": "8kQm2Xb7nHc1RrYl…",
+                    "expiresIn": 3600,
+                    "user": {
+                        "userId": "usr_7Kd2MnXb4qRc9TvWyLp3",
+                        "email": "avery@example.org",
+                        "displayName": "Avery Diaz",
+                        "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
+                    },
+                }
+            ]
+        },
+    )
+
+    session_id: str = Field(
+        description="Present this as `Authorization: Bearer <sessionId>` on every "
+        "authenticated route, including `POST /auth/connect`."
+    )
+    expires_in: int = Field(description="Seconds until the session expires.")
+    user: UserProfile
+
+
+class SessionResponse(APIModel):
+    """Who the presented bearer belongs to.
+
+    ``authenticated`` distinguishes the two kinds of session: one taken out by
+    signing in, and one minted by an authorization with nobody signed in. The
+    second reaches a record but names no person, so ``user`` is null and the
+    record it holds is lost when it expires.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "authenticated": True,
+                    "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
+                    "expiresIn": 2840,
+                    "user": {
+                        "userId": "usr_7Kd2MnXb4qRc9TvWyLp3",
+                        "email": "avery@example.org",
+                        "displayName": "Avery Diaz",
+                        "patientId": "pat_9Fq3TnVb2mKd7sXwLp4RcYhZ",
+                    },
+                }
+            ]
+        },
+    )
+
+    authenticated: bool = Field(
+        description="Whether a person signed in, as opposed to merely holding a "
+        "session from a completed authorization."
+    )
+    patient_id: str | None = Field(
+        default=None,
+        description="The patient record this session reaches, or `null` where it "
+        "reaches none yet.",
+    )
+    expires_in: int = Field(
+        description="Seconds until this session expires. Never negative — an "
+        "expired session is refused rather than reported."
+    )
+    user: UserProfile | None = None
+
+
+class LogoutResponse(APIModel):
+    """What signing out ended, and where to finish ending it."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "success": True,
+                    "logoutUrl": "https://example.okta.com/oauth2/default/v1/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.org",
+                }
+            ]
+        },
+    )
+
+    success: bool = True
+    logout_url: str | None = Field(
+        default=None,
+        description="Where to send the browser to end the session at the identity "
+        "provider as well. `null` where the provider publishes no logout endpoint, "
+        "which is common and not an error: the session here is ended either way, "
+        "and this only stops the provider from signing the user straight back in "
+        "without asking.",
+    )
+
+
+class AuthProviderInfo(APIModel):
+    """Whether this deployment can sign users in, and on what terms."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "loginEnabled": True,
+                    "loginRequired": False,
+                    "issuer": "https://example.okta.com/oauth2/default",
+                }
+            ]
+        },
+    )
+
+    login_enabled: bool = Field(
+        description="Whether an identity provider is configured. When false, the "
+        "login routes answer 503 and connecting works anonymously."
+    )
+    login_required: bool = Field(
+        description="Whether `POST /auth/connect` requires being signed in."
+    )
+    issuer: str | None = Field(
+        default=None,
+        description="The configured identity provider, so a frontend can label "
+        "the sign-in button. `null` when login is not enabled.",
+        examples=["https://example.okta.com/oauth2/default"],
+    )
+
+
 # --- the normalized record ---------------------------------------------------
 #
 # These restate the envelope app/fhir/normalize.py produces. The routes build

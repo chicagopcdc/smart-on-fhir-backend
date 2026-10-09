@@ -21,6 +21,11 @@ cryptography = "^48.0.0"
 pydantic-settings = "^2.14.1"
 slowapi = "^0.1.10"
 fhir-resources = "^8.3.0"
+# Verifying the ID token a login comes back with. The `crypto` extra is what
+# brings the RSA/EC support in: without it PyJWT can only do HMAC, and an
+# asymmetric signature — which is the only kind an IdP's published keys produce —
+# fails at import of the algorithm rather than at verification.
+pyjwt = { extras = ["crypto"], version = "^2.10" }
 
 [build-system]
 requires = ["poetry-core"]

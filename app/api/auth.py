@@ -21,8 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     RATE_LIMITED,
+    Principal,
     auth_rate_limit,
-    get_optional_session,
+    get_optional_principal,
     limiter,
 )
 from app.api.schemas import (
@@ -32,7 +33,7 @@ from app.api.schemas import (
     ConnectResponse,
     refusal,
 )
-from app.auth.models import AppSession, OAuthState
+from app.auth.models import AppSession, OAuthState, User
 from app.core.config import get_settings
 from app.core.db import (
     delete_dead_connections,
@@ -145,6 +146,7 @@ async def _begin_authorization(
     provider: str,
     iss: str,
     link_patient_id: str | None,
+    user_id: str | None = None,
 ) -> tuple[str, str, int]:
     """Validate a connection request and mint the authorization it needs.
 
@@ -205,6 +207,7 @@ async def _begin_authorization(
             ttl,
             code_verifier=auth.code_verifier,
             link_patient_id=link_patient_id,
+            user_id=user_id,
         )
     )
     await session.commit()
@@ -218,7 +221,10 @@ async def _begin_authorization(
     summary="Start connecting a patient to a provider",
     responses={
         400: refusal("Unknown provider, or an issuer that provider is not registered for"),
-        401: refusal("A session was presented but is invalid or expired"),
+        401: refusal(
+            "A session was presented but is invalid or expired, or this deployment "
+            "requires signing in and no session was presented"
+        ),
         429: RATE_LIMITED,
         502: refusal("The server's SMART configuration could not be read"),
         503: refusal("The provider has no credentials configured in this deployment"),
@@ -238,9 +244,9 @@ async def connect(
             },
             "second": {
                 "summary": "Add a second provider to the same record",
-                "description": "Send the session from the first connection as "
-                "`Authorization: Bearer <sessionId>`. The new connection joins that "
-                "patient record instead of starting one of its own.",
+                "description": "Send a session as `Authorization: Bearer <sessionId>` "
+                "— from signing in, or from the first connection. The new connection "
+                "joins that patient record instead of starting one of its own.",
                 "value": {
                     "provider": "CERNER_SANDBOX",
                     "iss": "https://fhir-ehr-code.cerner.com/r4/ec2458f2-1e24-41c8-b71b-0e701af7583d",
@@ -248,7 +254,7 @@ async def connect(
             },
         }
     ),
-    app_session: AppSession | None = Depends(get_optional_session),
+    principal: Principal | None = Depends(get_optional_principal),
     session: AsyncSession = Depends(get_session),
 ):
     """Begin the SMART App Launch flow and return where to send the patient.
@@ -261,13 +267,27 @@ async def connect(
 
     Presenting an existing session means "this provider is the same patient as
     the record I already hold", and the resulting connection joins that record.
-    Without one, the connection anchors a new record.
+    A session from signing in says so for the account rather than for one
+    connection, which is what lets a provider be added weeks later. Without a
+    session the connection anchors a new record — unless this deployment sets
+    `REQUIRE_USER_LOGIN`, in which case there is no anonymous path and the
+    request is refused.
     """
+    # Refused before anything is done, so a deployment that requires an account
+    # never creates a record nobody can get back to. Checked here rather than in
+    # the dependency because it is only connect that must not proceed without
+    # one: reading a record you already hold a session for is unaffected.
+    if get_settings().require_user_login and (
+        principal is None or not principal.is_authenticated
+    ):
+        raise HTTPException(status_code=401, detail="Sign in before connecting a provider")
+
     url, state, ttl = await _begin_authorization(
         session,
         provider=body.provider,
         iss=body.iss,
-        link_patient_id=app_session.patient_id if app_session else None,
+        link_patient_id=principal.patient_id if principal else None,
+        user_id=principal.session.user_id if principal else None,
     )
     return ConnectResponse(authorization_url=url, state=state, expires_in=ttl)
 
@@ -346,6 +366,7 @@ async def handle_callback(
     provider = state_row.provider
     code_verifier = state_row.code_verifier
     link_patient_id = state_row.link_patient_id
+    user_id = state_row.user_id
     ehr = config.EHR_CONFIGS.get(provider)
     if ehr is None:
         raise HTTPException(status_code=400, detail="Unknown or unsupported provider")
@@ -383,6 +404,20 @@ async def handle_callback(
         _log_upstream_failure(exc, stage="token_exchange", provider=provider, iss=iss)
         raise HTTPException(status_code=502, detail="Token exchange failed") from exc
 
+    # Where an account started this, the record to join is whatever it owns
+    # *now* rather than what it owned when the flow began. The two differ when a
+    # patient starts connecting two providers before finishing either: both
+    # flows begin with the account holding no record, and taking the state row's
+    # answer would have the second authorization anchor a second record, which
+    # the account does not point at and nothing can reach.
+    #
+    # Safe to re-read because it is the account that was checked at /auth/connect
+    # and the account that is being read here; what changed in between can only
+    # be this same account's own first connection.
+    user = await session.get(User, user_id) if user_id else None
+    if user is not None:
+        link_patient_id = user.patient_id
+
     # A connection is scoped to a patient, so a token with no patient context
     # cannot anchor one. Refuse rather than store it under an empty id, which two
     # such authorizations would then share.
@@ -404,6 +439,18 @@ async def handle_callback(
         token_set=token_set,
     )
 
+    # Hand the record to the account that authorized it, where one did and it
+    # does not have one yet. This is the whole point of signing in: from here the
+    # record belongs to a person rather than to a session, so it is still theirs
+    # once this session has expired and they come back.
+    #
+    # Only when the account holds none. An account that already had one supplied
+    # it as link_patient_id above, so the connection joined it and there is
+    # nothing to set; assigning here regardless would be how an account came to
+    # point at its second record and lose sight of its first.
+    if user is not None and user.patient_id is None:
+        user.patient_id = token_row.patient_id
+
     # Issue a session against the record, not the connection, so the bearer
     # reaches everything that record holds and nothing outside it.
     ttl = get_settings().app_session_ttl_seconds
@@ -413,6 +460,7 @@ async def handle_callback(
         provider=provider,
         iss=iss,
         ttl_seconds=ttl,
+        user_id=user.id if user is not None else None,
     )
     # Fold the sweeps into the commit that persists this session, so the tables
     # stay tidy without adding a write to the resource read path. Authorizing is
