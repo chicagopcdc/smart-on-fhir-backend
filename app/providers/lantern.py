@@ -77,7 +77,12 @@ _FILE_RE = re.compile(r"^(\d{2})_(\d{2})_(\d{4})endpointdata\.csv$")
 # all before anyone is sent through a login.
 _SRC_URL = "url"
 _SRC_NAME = "api_information_source_name"
-_SRC_VENDOR = "certified_api_developer_name"
+# Renamed upstream from `certified_api_developer_name` in the file published on
+# 2025-12-07; the one published on 2025-12-06 was the last to carry the old name.
+# Nothing broke loudly when it did, because the row is read with `.get()` below —
+# so every endpoint simply got a null vendor, and every vendor search matched
+# nothing, for as long as it took anyone to run the `live` suite.
+_SRC_VENDOR = "api_developer_name"
 _SRC_FHIR_VERSION = "capability_fhir_version"
 _SRC_SMART_RESPONSE = "smart_http_response"
 

@@ -31,7 +31,7 @@ FILE = "11_14_2025endpointdata.csv"
 # a vendor it does not run, endpoints that failed ONC's SMART probe, and one that
 # could not be reached at all.
 CSV = (
-    '"url","api_information_source_name","certified_api_developer_name",'
+    '"url","api_information_source_name","api_developer_name",'
     '"capability_fhir_version","smart_http_response"\n'
     '"https://one.example/fhir","Riverbend Health","Epic Systems Corporation","4.0.1","200"\n'
     '"https://two.example/fhir","Lakeside Clinic","Epic Systems Corporation","4.0.1","404"\n'
@@ -154,7 +154,7 @@ async def test_an_endpoint_this_backend_can_authorize_says_so():
     be passed straight to /auth/connect."""
     configured = config.configured_providers()[0]
     _mock_mirror(
-        '"url","api_information_source_name","certified_api_developer_name",'
+        '"url","api_information_source_name","api_developer_name",'
         '"capability_fhir_version","smart_http_response"\n'
         f'"{configured["iss"]}","Sandbox","Epic Systems Corporation","4.0.1","200"\n'
     )
