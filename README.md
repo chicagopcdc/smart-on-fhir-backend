@@ -793,18 +793,89 @@ Full request and response schemas, with examples, are at `/docs`.
 | GET | `/providers` | The providers this backend is configured for, for a frontend to offer alongside the searched list. Each carries the `provider` key `/auth/connect` expects. |
 | GET | `/health` | Whether the service and its database are up. `503` when the database cannot be reached; this is what the container healthcheck reads. |
 
-Every refusal answers `{"detail": "..."}`, including the throttle, which also sends
-`Retry-After`. Two responses are not refusals and do not: `GET /health` reports its
-own state as a `HealthResponse` whether it is `200` or `503`, and a request whose
-shape is wrong gets FastAPI's own `422`, whose `detail` is a list of the fields at
-fault rather than a sentence. The per-client rate limits are configurable (`AUTH_RATE_LIMIT`,
-`FHIR_RATE_LIMIT`, `ENDPOINT_CHECK_RATE_LIMIT`) and can be turned off for local
-single-user runs.
+The per-client rate limits are configurable (`AUTH_RATE_LIMIT`, `FHIR_RATE_LIMIT`,
+`ENDPOINT_CHECK_RATE_LIMIT`) and can be turned off for local single-user runs.
+
+### How a request is refused
+
+Every failure — a route's, a dependency's, a `404` for a path that does not exist, a
+request whose shape is wrong, an uncaught exception — answers the same envelope:
+
+```json
+{
+  "error": {
+    "code": "RECORD_NOT_FOUND",
+    "message": "No such patient record"
+  }
+}
+```
+
+The two halves are for two readers. `code` is for the program: a closed set, stable
+across wording changes, safe to branch on. `message` is for whoever ends up reading it,
+and is the half free to be reworded — so a client that branches on the sentence is a
+client that breaks on a typo fix.
+
+The code is not simply the status, because a status is often not enough to act on.
+`POST /auth/callback` answers `502` both for a provider it could not reach and for one
+requiring a client authentication method this backend does not implement; the first is
+worth retrying and the second is worth a bug report. The same route answers the sentence
+"Token exchange failed" under two statuses — `400` where the provider refused the grant,
+`502` where it was never reached — and the sentence stays identical on purpose, since
+repeating a server's reasons back says more about it than a patient asked. The code is
+what separates them.
+
+| Code | Status | Means |
+| --- | --- | --- |
+| `INVALID_REQUEST` | 422 | The request could not be read, or carried a value this API will not act on. |
+| `UNKNOWN_PROVIDER` | 400 | No provider is registered under that key in this deployment. |
+| `ISSUER_NOT_ALLOWED` | 400 | The issuer is not one the named provider is registered for, or not one this backend will fetch at all. |
+| `INVALID_STATE` | 400 | The `state` does not match an authorization in flight, has expired, or has already been used. |
+| `AUTHORIZATION_REJECTED` | 400 | The provider refused the authorization code — it was wrong, already spent, or expired. |
+| `NO_PATIENT_CONTEXT` | 400 | The authorization succeeded but named no patient, so there is nothing to hang a connection off. |
+| `SIGN_IN_NOT_VERIFIED` | 400 | The identity provider's answer could not be verified, so no account was signed in. |
+| `AUTHENTICATION_REQUIRED` | 401 | No session was presented, and this request needs one. |
+| `SESSION_INVALID` | 401 | The session presented is unknown, expired, or no longer resolves. |
+| `RECORD_NOT_FOUND` | 404 | There is no such patient record, or the session presented does not hold it. |
+| `CONNECTION_NOT_FOUND` | 404 | That provider is not connected to this record. |
+| `NOT_FOUND` | 404 | There is no such route. |
+| `METHOD_NOT_ALLOWED` | 405 | That route does not accept this method. |
+| `RATE_LIMITED` | 429 | Too many requests from this client. `Retry-After` says when to come back. |
+| `INTERNAL_ERROR` | 500 | Something failed in a way this API does not model. The `x-request-id` header is what ties the response to the log line. |
+| `REAUTHORIZATION_REQUIRED` | 502 | The stored authorization is no longer good; this provider has to be connected again. |
+| `PROVIDER_UNREACHABLE` | 502 | The EHR server could not be reached, or did not answer with a usable SMART configuration. |
+| `PROVIDER_UNSUPPORTED` | 502 | The EHR server requires something this backend does not implement, such as an unsupported client authentication method. |
+| `CONNECTION_UNREADABLE` | 502 | A stored connection could not be read. This is a server-side fault rather than anything the caller did. |
+| `IDENTITY_PROVIDER_ERROR` | 502 | The identity provider could not be reached, or did not answer usably. |
+| `PROVIDER_NOT_CONFIGURED` | 503 | That provider has no credentials in this deployment, so it cannot be authorized against. |
+| `LOGIN_NOT_CONFIGURED` | 503 | This deployment has no identity provider configured, so there is nothing to sign in to. |
+| `ENDPOINT_DATA_UNAVAILABLE` | 503 | No endpoint data is available to serve just now. |
+
+Which codes a given endpoint can answer under a given status is in the OpenAPI document,
+as a named example per code — so `/docs` shows the exact set for each rather than the
+whole list and a guess. The set itself lives in `app/api/errors.py`; nothing else defines
+one, and the suite fails on a code that is not documented there.
+
+**One response is deliberately not an envelope.** `GET /health` reports its own state as a
+`HealthResponse` whether it answers `200` or `503`, because a container runtime reads the
+status and an operator reads the `status` and `database` fields. Wrapping that in a refusal
+would drop both to say nothing a probe can act on.
+
+A malformed request keeps FastAPI's `422` — the status a caller's existing handling is
+written against — but no longer its body, which was a *list* of per-field errors and so the
+one shape in the API that had to be special-cased. The message now names the fields at
+fault and never the values sent, on the same rule the rest of the API follows: a value
+this API echoes is a value that ends up in a browser console and a proxy log, and on this
+one the value is as likely to be a patient identifier as a page number.
 
 ### Deprecated
 
-These keep working, with their original response shapes, until the frontend has moved
+These keep working, with their original *success* shapes, until the frontend has moved
 off them. They are marked deprecated in `/docs`.
+
+Their **error** bodies did change: each used to answer a bare
+`{"error": "<sentence>"}`, and they now answer the envelope above like everything else —
+`error` is an object rather than a string. A caller rendering `body.error` directly is the
+one thing on these routes that needs updating.
 
 | Method | Path | Superseded by |
 | --- | --- | --- |

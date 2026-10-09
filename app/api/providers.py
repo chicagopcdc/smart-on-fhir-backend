@@ -11,17 +11,17 @@ this one and quietly misread the parameter. Real annotation objects sidestep it.
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.api.deps import RATE_LIMITED, endpoint_check_rate_limit, limiter
+from app.api.errors import APIError, ErrorCode, error_response, refusal
 from app.api.schemas import (
     ConfiguredProvider,
     EndpointCheckResponse,
     EndpointCheckStatus,
     ProviderSearchResponse,
     ProviderSearchRow,
-    refusal,
 )
 from app.providers import config, discovery, lantern, registry
 from app.providers.discovery import DiscoveryResult, SMARTDiscoveryError
@@ -62,7 +62,11 @@ def _configured_by_issuer() -> dict[str, str]:
     "/providers/search",
     response_model=ProviderSearchResponse,
     summary="Search the national list of FHIR endpoints",
-    responses={503: refusal("No endpoint data is available to serve")},
+    responses={
+        503: refusal(
+            "No endpoint data is available to serve", ErrorCode.ENDPOINT_DATA_UNAVAILABLE
+        )
+    },
 )
 async def search_providers(
     query: str = Query(
@@ -105,9 +109,9 @@ async def search_providers(
         # Only reachable if the source is unavailable and no provider is
         # configured, since the fallback seeds the dataset from the configured
         # providers. Raised, not returned: what costs a response its CORS headers
-        # is going unhandled, and an HTTPException is handled inside the
-        # middleware stack, so this keeps them and the API's one refusal shape.
-        raise HTTPException(status_code=503, detail=UNAVAILABLE)
+        # is going unhandled, and an APIError is handled inside the middleware
+        # stack, so this keeps them and the API's one refusal shape.
+        raise APIError(503, ErrorCode.ENDPOINT_DATA_UNAVAILABLE, UNAVAILABLE)
 
     matches = lantern.search(data, query=query, vendor=vendor, smart_only=smart_only)
     configured = _configured_by_issuer()
@@ -144,7 +148,9 @@ async def search_providers(
     response_model=EndpointCheckResponse,
     summary="Check whether an endpoint can be used, now",
     responses={
-        400: refusal("The issuer is not one this backend will fetch"),
+        400: refusal(
+            "The issuer is not one this backend will fetch", ErrorCode.ISSUER_NOT_ALLOWED
+        ),
         429: RATE_LIMITED,
     },
 )
@@ -175,9 +181,9 @@ async def check_endpoint(
         checked = await ensure_fetchable(iss)
     except UnsafeTarget as exc:
         # Raised rather than returned: what costs a response its CORS headers is
-        # going unhandled, and an HTTPException is handled inside the middleware
+        # going unhandled, and an APIError is handled inside the middleware
         # stack. See the 503 in search_providers above.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise APIError(400, ErrorCode.ISSUER_NOT_ALLOWED, str(exc)) from exc
     except UnresolvedTarget:
         # A name that no longer resolves is a fact about the endpoint, not a bad
         # request, so it answers like any other endpoint that cannot be reached.
@@ -237,8 +243,13 @@ async def providers():
     summary="Search the endpoint list (deprecated)",
     description="Superseded by `GET /providers/search`, which adds vendor and "
     "SMART-capability filtering and says which endpoints this backend can "
-    "authorize against. Kept, with its original response shape, so the current "
+    "authorize against. Kept, with its original success shape, so the current "
     "frontend keeps working; it will be removed once that has moved.",
+    responses={
+        503: refusal(
+            "No endpoint data is available to serve", ErrorCode.ENDPOINT_DATA_UNAVAILABLE
+        )
+    },
 )
 async def lantern_endpoints(
     query: str = Query("", description="Free-text search, case-insensitive"),
@@ -249,7 +260,10 @@ async def lantern_endpoints(
 ):
     data, source, data_date = await lantern.current_endpoints()
     if not data:
-        return JSONResponse({"error": UNAVAILABLE}, status_code=503)
+        # The refusal moved to the standard envelope with every other one; the
+        # 200 below is untouched, which is what "original response shape" meant
+        # for this route in the first place.
+        return error_response(503, ErrorCode.ENDPOINT_DATA_UNAVAILABLE, UNAVAILABLE)
 
     matches = lantern.search(data, query=query)
     start, end = (page - 1) * page_size, page * page_size

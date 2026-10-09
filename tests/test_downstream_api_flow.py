@@ -26,6 +26,7 @@ from tests.app_harness import (
     connect,
     load_fixture,
     mock_server,
+    refusal,
     serve_record,
     token_endpoint,
     token_response,
@@ -371,7 +372,7 @@ async def test_a_session_cannot_read_another_patients_record(db_url):
                 )
                 # 404, not 403: confirming the id exists would itself leak.
                 assert response.status_code == 404, path
-                assert response.json()["detail"] == "No such patient record"
+                assert refusal(response) == ("RECORD_NOT_FOUND", "No such patient record")
 
 
 @respx.mock

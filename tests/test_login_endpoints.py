@@ -24,6 +24,7 @@ from tests.app_harness import (
     bearer,
     client,
     connect,
+    refusal,
     token_response,
 )
 from tests.test_login_flow import sign_in
@@ -88,7 +89,9 @@ async def test_login_is_unavailable_rather_than_broken_without_an_issuer(
 
     assert start.status_code == 503
     assert finish.status_code == 503
-    assert "not configured" in start.json()["detail"]
+    code, message = refusal(start)
+    assert code == "LOGIN_NOT_CONFIGURED"
+    assert "not configured" in message
 
 
 @respx.mock
@@ -199,7 +202,10 @@ async def test_the_deprecated_read_route_has_nothing_to_read_for_a_login_session
             )
 
     assert response.status_code == 404
-    assert response.json() == {"error": "No connected provider for patient"}
+    assert refusal(response) == (
+        "CONNECTION_NOT_FOUND",
+        "No connected provider for patient",
+    )
 
 
 # --- the sweep has to see an account's session --------------------------------

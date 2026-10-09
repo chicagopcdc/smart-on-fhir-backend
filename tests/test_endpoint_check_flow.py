@@ -23,7 +23,7 @@ from app.api import deps
 from app.core.config import get_settings
 from app.providers import registry, targets
 from tests import upstream
-from tests.app_harness import client
+from tests.app_harness import client, refusal
 
 WELL_KNOWN = "/.well-known/smart-configuration"
 
@@ -191,7 +191,9 @@ async def test_an_issuer_we_refuse_costs_no_outbound_request(iss):
     # The refusal says what the rule is; it does not read the URL back out. A
     # message built from the input would make this a way to place text of one's
     # choosing in a response.
-    assert iss not in response.json()["detail"]
+    code, message = refusal(response)
+    assert code == "ISSUER_NOT_ALLOWED"
+    assert iss not in message
 
 
 @respx.mock
@@ -223,7 +225,7 @@ async def test_a_refusal_stays_a_refusal_and_keeps_its_cors_headers(iss, monkeyp
 
     assert response.status_code == 400, response.text
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
-    assert response.json()["detail"]
+    assert refusal(response)[0] == "ISSUER_NOT_ALLOWED"
     assert not respx.calls
 
 

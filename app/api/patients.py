@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.api.deps import (
     get_current_principal,
     limiter,
 )
+from app.api.errors import APIError, ErrorCode, error_response, refusal
 from app.api.schemas import (
     ConnectionHealth,
     ConnectionResources,
@@ -33,7 +34,6 @@ from app.api.schemas import (
     SummaryIssue,
     SummaryResponse,
     SummarySection,
-    refusal,
 )
 from app.auth import tokens
 from app.auth.models import ProviderToken, utcnow
@@ -62,8 +62,14 @@ PATIENT_ID = Path(
     examples=["pat_9Fq3TnVb2mKd7sXwLp4RcYhZ"],
 )
 
-NOT_FOUND = refusal("No such record, or the session does not hold it")
-UNAUTHORIZED = refusal("Missing, invalid, or expired session")
+NOT_FOUND = refusal(
+    "No such record, or the session does not hold it", ErrorCode.RECORD_NOT_FOUND
+)
+UNAUTHORIZED = refusal(
+    "Missing, invalid, or expired session",
+    ErrorCode.AUTHENTICATION_REQUIRED,
+    ErrorCode.SESSION_INVALID,
+)
 
 
 async def _authorized_connections(
@@ -87,11 +93,11 @@ async def _authorized_connections(
     comes back empty rather than as a missing record.
     """
     if principal.patient_id is None or patient_id != principal.patient_id:
-        raise HTTPException(status_code=404, detail="No such patient record")
+        raise APIError(404, ErrorCode.RECORD_NOT_FOUND, "No such patient record")
 
     connections = await connections_for_patient(session, patient_id)
     if not connections:
-        raise HTTPException(status_code=404, detail="No such patient record")
+        raise APIError(404, ErrorCode.RECORD_NOT_FOUND, "No such patient record")
     await mark_record_used(session, connections)
 
     if provider is not None:
@@ -137,6 +143,22 @@ UNGRANTED = _Refusal(
 def _refusal_for(error: tokens.TokenRefreshError) -> _Refusal:
     """How a failure to renew a token reads to whoever asked for the record."""
     return REVOKED if isinstance(error, tokens.ReauthorizationRequired) else UNRENEWABLE
+
+
+def _code_for(refused: _Refusal) -> ErrorCode:
+    """Which error code a connection-level refusal answers under.
+
+    Only ``/fhir_resources`` asks. The record routes report a refusal inside a
+    200 — a provider that cannot be read does not make the rest of the chart a
+    failure — so they carry ``needs_reauthorization`` as a field and need no code
+    at all. On the one route that refuses outright, that flag is the whole
+    distinction worth preserving: reconnect, or wait.
+    """
+    return (
+        ErrorCode.REAUTHORIZATION_REQUIRED
+        if refused.needs_reauthorization
+        else ErrorCode.CONNECTION_UNREADABLE
+    )
 
 
 def _log_undecryptable(connection: ProviderToken) -> None:
@@ -420,7 +442,11 @@ async def read_summary(
     summary="Disconnect a provider from a patient record",
     responses={
         401: UNAUTHORIZED,
-        404: refusal("No such record, or that provider is not connected to it"),
+        404: refusal(
+            "No such record, or that provider is not connected to it",
+            ErrorCode.RECORD_NOT_FOUND,
+            ErrorCode.CONNECTION_NOT_FOUND,
+        ),
         429: RATE_LIMITED,
     },
 )
@@ -454,7 +480,9 @@ async def disconnect_provider(
         patient_id, principal, session, provider
     )
     if not connections:
-        raise HTTPException(status_code=404, detail="No such connection on this record")
+        raise APIError(
+            404, ErrorCode.CONNECTION_NOT_FOUND, "No such connection on this record"
+        )
 
     # A record can hold one provider more than once — a connection is unique on
     # the patient the server named as well as on the server — and the request
@@ -515,6 +543,21 @@ async def _revoke_at_provider(connection: ProviderToken) -> bool:
     description="Superseded by `GET /patients/{patientId}/resources`, which names "
     "the record being read and covers every provider on it. Kept so the current "
     "frontend keeps working; it will be removed once that has moved.",
+    responses={
+        401: UNAUTHORIZED,
+        404: refusal(
+            "The session was not issued for a connection, or that connection is gone",
+            ErrorCode.CONNECTION_NOT_FOUND,
+        ),
+        429: RATE_LIMITED,
+        502: refusal(
+            "The connection could not be read. Unlike the route that replaces "
+            "this one, which reports a failed connection inside a 200, there is "
+            "only one connection here and so nothing to answer with.",
+            ErrorCode.REAUTHORIZATION_REQUIRED,
+            ErrorCode.CONNECTION_UNREADABLE,
+        ),
+    },
 )
 @limiter.limit(fhir_rate_limit)
 async def get_all_resource(
@@ -540,7 +583,9 @@ async def get_all_resource(
     # in has the record routes, which read everything this would have and more.
     app_session = principal.session
     if principal.patient_id is None or app_session.provider is None:
-        return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
+        return error_response(
+            404, ErrorCode.CONNECTION_NOT_FOUND, "No connected provider for patient"
+        )
 
     connections = await connections_for_patient(session, principal.patient_id)
     token_row = next(
@@ -554,15 +599,20 @@ async def get_all_resource(
         None,
     )
     if token_row is None:
-        return JSONResponse({"error": "No connected provider for patient"}, status_code=404)
+        return error_response(
+            404, ErrorCode.CONNECTION_NOT_FOUND, "No connected provider for patient"
+        )
     await mark_record_used(session, connections)
 
     try:
         live = await tokens.live_token(token_row)
     except tokens.TokenRefreshError as exc:
-        # This shape predates per-connection reporting, so it carries the wording
-        # without the flag beside it that says whether reconnecting would help.
-        return JSONResponse({"error": _refusal_for(exc).error}, status_code=502)
+        # This route predates per-connection reporting, so it has no field for
+        # the flag that says whether reconnecting would help. The envelope's code
+        # carries it instead, which is the one thing this shape gains from the
+        # migration rather than merely keeping.
+        refused = _refusal_for(exc)
+        return error_response(502, _code_for(refused), refused.error)
     except TokenEncryptionError:
         # The same fault the per-connection paths report as UNDECRYPTABLE. This
         # route reads one connection rather than a record, so there is nothing to
@@ -570,7 +620,9 @@ async def get_all_resource(
         # the frontend that has not moved off this route yet would otherwise see a
         # bare 500 for a problem the newer routes describe in a sentence.
         _log_undecryptable(token_row)
-        return JSONResponse({"error": UNDECRYPTABLE.error}, status_code=502)
+        return error_response(
+            502, _code_for(UNDECRYPTABLE), UNDECRYPTABLE.error
+        )
 
     resources = await service.fetch_fhir_resources(
         live.access_token,

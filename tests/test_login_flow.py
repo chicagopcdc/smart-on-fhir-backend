@@ -18,7 +18,7 @@ from sqlalchemy import select
 from app.auth.models import AppSession, LoginState, User
 from app.core.config import get_settings
 from tests import idp
-from tests.app_harness import app_db, client
+from tests.app_harness import app_db, client, refusal
 
 
 async def start_login(http) -> dict:
@@ -105,7 +105,9 @@ async def test_login_reports_a_provider_it_cannot_read(tmp_path):
             response = await http.post("/auth/login")
 
     assert response.status_code == 502
-    assert "identity provider" in response.json()["detail"]
+    code, message = refusal(response)
+    assert code == "IDENTITY_PROVIDER_ERROR"
+    assert "identity provider" in message
 
 
 @respx.mock
@@ -223,7 +225,7 @@ async def test_the_state_is_consumed_so_a_login_cannot_be_replayed(
 
     assert first.status_code == 200
     assert replay.status_code == 400
-    assert replay.json()["detail"] == "Invalid or expired state"
+    assert refusal(replay) == ("INVALID_STATE", "Invalid or expired state")
 
 
 @respx.mock
@@ -318,7 +320,7 @@ async def test_an_id_token_that_does_not_verify_is_refused(
             users = (await session.execute(select(User))).scalars().all()
 
     assert response.status_code == 400, f"a token {because} was accepted"
-    assert response.json()["detail"] == "Sign-in could not be verified"
+    assert refusal(response) == ("SIGN_IN_NOT_VERIFIED", "Sign-in could not be verified")
     # And nothing was written: a refused sign-in leaves no account behind.
     assert users == []
 
@@ -339,7 +341,7 @@ async def test_an_id_token_for_another_login_is_refused(tmp_path, monkeypatch):
                 )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Sign-in could not be verified"
+    assert refusal(response) == ("SIGN_IN_NOT_VERIFIED", "Sign-in could not be verified")
 
 
 @respx.mock

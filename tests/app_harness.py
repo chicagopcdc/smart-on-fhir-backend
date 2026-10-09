@@ -337,6 +337,23 @@ def bearer(session_id: str) -> dict:
     return {"Authorization": f"Bearer {session_id}"}
 
 
+def refusal(response: httpx.Response) -> tuple[str, str]:
+    """The ``(code, message)`` of a refusal, checking the envelope on the way.
+
+    Every test that asserts on a failure goes through here rather than reading
+    the body itself, so the shape is checked everywhere a refusal is checked at
+    all — which is the only way the one route that quietly answers something else
+    gets caught.
+    """
+    body = response.json()
+    assert set(body) == {"error"}, body
+    error = body["error"]
+    assert set(error) == {"code", "message"}, error
+    assert isinstance(error["code"], str) and error["code"], error
+    assert isinstance(error["message"], str) and error["message"], error
+    return error["code"], error["message"]
+
+
 def form(request: httpx.Request) -> dict[str, str]:
     """A posted form body, flattened, for saying what was actually sent."""
     return {key: values[0] for key, values in parse_qs(request.content.decode()).items()}

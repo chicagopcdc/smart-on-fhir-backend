@@ -28,29 +28,10 @@ class APIModel(BaseModel):
     )
 
 
-class ErrorResponse(BaseModel):
-    """The body of a failed request.
-
-    FastAPI's ``HTTPException`` renders as ``{"detail": ...}``, so declaring it
-    here documents what a caller already receives rather than inventing a second
-    error shape for them to handle.
-    """
-
-    model_config = ConfigDict(
-        json_schema_extra={"examples": [{"detail": "Invalid or expired session"}]}
-    )
-
-    detail: str
-
-
-def refusal(description: str) -> dict:
-    """One entry for a route's ``responses``, documenting why it was refused.
-
-    Every refusal this API can answer has the same body, so the only thing that
-    varies per status is the prose. Building the entry here keeps that true:
-    routes name their reasons and never restate the shape.
-    """
-    return {"model": ErrorResponse, "description": description}
+# What a refusal looks like, and the codes it can name, live in
+# ``app/api/errors.py`` — ``ErrorResponse``, ``ErrorCode`` and ``refusal``. They
+# are a contract of their own: a route declares which of them it can answer,
+# while the models below describe only what it answers on success.
 
 
 # --- authorization -----------------------------------------------------------

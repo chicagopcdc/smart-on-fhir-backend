@@ -40,6 +40,7 @@ from tests.app_harness import (
     form,
     load_fixture,
     refreshes,
+    refusal,
     refuse,
     serve_record,
     stored_connections,
@@ -823,7 +824,7 @@ async def test_a_session_cannot_disconnect_a_record_it_does_not_hold(db_url):
         assert await count_connections(factory) == 2, "a refused request deleted something"
 
     assert trespass.status_code == 404
-    assert trespass.json()["detail"] == "No such patient record"
+    assert refusal(trespass) == ("RECORD_NOT_FOUND", "No such patient record")
     assert absent.status_code == 404
     assert unauthenticated.status_code == 401
 
