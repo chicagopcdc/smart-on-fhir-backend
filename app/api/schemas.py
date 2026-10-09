@@ -170,7 +170,7 @@ class LoginResponse(APIModel):
         json_schema_extra={
             "examples": [
                 {
-                    "authorizationUrl": "https://example.okta.com/oauth2/default/v1/authorize?response_type=code&client_id=…&state=Yl8k…",
+                    "authorizationUrl": "https://sso.example.org/realms/smartfhir/protocol/openid-connect/auth?response_type=code&client_id=…&state=Yl8k…",
                     "state": "Yl8kQq2Xb7nHc1RrTv9WdF3s",
                     "expiresIn": 600,
                 }
@@ -315,7 +315,7 @@ class LogoutResponse(APIModel):
             "examples": [
                 {
                     "success": True,
-                    "logoutUrl": "https://example.okta.com/oauth2/default/v1/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.org",
+                    "logoutUrl": "https://sso.example.org/realms/smartfhir/protocol/openid-connect/logout?post_logout_redirect_uri=https%3A%2F%2Fapp.example.org",
                 }
             ]
         },
@@ -343,7 +343,7 @@ class AuthProviderInfo(APIModel):
                 {
                     "loginEnabled": True,
                     "loginRequired": False,
-                    "issuer": "https://example.okta.com/oauth2/default",
+                    "issuer": "https://sso.example.org/realms/smartfhir",
                 }
             ]
         },
@@ -360,7 +360,7 @@ class AuthProviderInfo(APIModel):
         default=None,
         description="The configured identity provider, so a frontend can label "
         "the sign-in button. `null` when login is not enabled.",
-        examples=["https://example.okta.com/oauth2/default"],
+        examples=["https://sso.example.org/realms/smartfhir"],
     )
 
 

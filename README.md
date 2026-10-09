@@ -7,10 +7,10 @@ resources for the connected patient.
 
 ## How it works
 
-0. Optionally, the patient signs in with the deployment's identity provider — Okta or
-   Google — through `POST /auth/login` and `POST /auth/login/callback`. What comes back
-   is a session that names an *account*. Everything below then belongs to that account,
-   and is still there the next time they sign in. See
+0. Optionally, the patient signs in with the deployment's identity provider —
+   Keycloak — through `POST /auth/login` and `POST /auth/login/callback`.
+   What comes back is a session that names an *account*. Everything below then belongs
+   to that account, and is still there the next time they sign in. See
    [Accounts and signing in](#accounts-and-signing-in).
 1. A caller posts a provider and a FHIR base URL to `POST /auth/connect`. The backend
    validates both, reads the server's SMART configuration, and returns the URL to send
@@ -127,12 +127,15 @@ at the EHR where it can.
 
 ### Configuring the identity provider
 
-Any OIDC provider works. Everything but the three settings below is read from the
-issuer's `.well-known/openid-configuration` at runtime, the same way SMART endpoints
-are, so Okta and Google differ only in configuration:
+**This deployment signs users in with Keycloak.** Nothing in the code says so, and
+that is the point: the login layer is a plain OIDC relying party, so everything but the
+three settings below is read from the issuer's `.well-known/openid-configuration` at
+runtime, the same way SMART endpoints are. Pointing it somewhere else is configuration
+rather than a change:
 
 | | |
 | --- | --- |
+| **Keycloak** | `OIDC_ISSUER=https://<host>/realms/<realm>` |
 | Okta | `OIDC_ISSUER=https://<your-org>.okta.com/oauth2/default` |
 | Google | `OIDC_ISSUER=https://accounts.google.com` |
 
@@ -140,6 +143,31 @@ Register the redirect URI `FRONTEND_HOSTNAME + /auth/login/callback` with the pr
 it must match exactly or the provider refuses the redirect back. `OIDC_CLIENT_SECRET` is
 optional: omit it for a public client, which authenticates with PKCE alone. PKCE is sent
 either way.
+
+A Keycloak issuer is a *realm*, not the server: one Keycloak serves many, and the realm
+is what holds the users and the client registration. Two realms on one host are two
+issuers, and an account under one is not an account under the other. In the realm's
+**Clients → Create client**, with the client id you will set as `OIDC_CLIENT_ID`:
+
+| Setting | Value |
+| --- | --- |
+| Valid redirect URIs | `FRONTEND_HOSTNAME` + `/auth/login/callback` |
+| Valid post logout redirect URIs | `FRONTEND_HOSTNAME` |
+| Web origins | `FRONTEND_HOSTNAME` |
+| Client authentication | On for a confidential client (the secret is then under **Credentials**), Off for a public one |
+| Proof Key for Code Exchange | `S256`, under **Advanced** |
+
+The post-logout entry is the one that is easy to miss. Keycloak defaults it to the
+sign-in redirect URIs, which `FRONTEND_HOSTNAME` is not one of, so sign-out answers
+*Invalid redirect uri* until it is added — and the sign-out itself still succeeds,
+because ending the session here never depended on reaching Keycloak. Requiring `S256`
+is safe because PKCE is always sent.
+
+Keycloak then shows a *Do you want to log out?* page before taking that redirect. That
+is not a misconfiguration: it skips the question only for a request carrying an
+`id_token_hint`, and nothing here keeps an ID token — it is read once for the subject
+inside it and discarded, which is the point. Storing one to smooth over a confirmation
+screen would be keeping a credential for a cosmetic reason.
 
 Login is **off unless configured**. With `OIDC_ISSUER` unset the login routes answer
 `503`, `GET /auth/providers` reports `loginEnabled: false`, and connecting works
@@ -150,6 +178,40 @@ case where a record is created that nobody can ever get back to.
 The ID token is verified on every sign-in: signature against the issuer's published keys,
 then issuer, audience, expiry, and the nonce that binds it to the request that asked for
 it. A token failing any of those is refused and no account is created.
+
+#### Running Keycloak locally
+
+The local one runs the same software a deployment does, so what works here is what
+works there — it is not a stand-in.
+
+`docker compose --profile keycloak up` starts one alongside the stack, importing
+`keycloak/realm-smartfhir.json` on first start: a realm with the client above already
+registered and a user `avery` / `avery` to sign in as. Then in `.env`:
+
+```bash
+OIDC_ISSUER=http://keycloak:8080/realms/smartfhir
+OIDC_CLIENT_ID=smart-on-fhir-backend
+OIDC_CLIENT_SECRET=dev-client-secret-not-for-production
+```
+
+and add one line to `/etc/hosts`:
+
+```
+127.0.0.1 keycloak
+```
+
+That line is not incidental. An OIDC issuer is a single string that the browser and
+this backend must both resolve to the same server, and `localhost` is not such a
+string: inside the app container it is the app. The compose service name is — Compose's
+DNS resolves it on the network and the hosts entry resolves it on your machine — and it
+keeps working if you run the backend under Poetry instead. Everything Keycloak
+publishes is built from it, so `OIDC_ISSUER` has to be spelled exactly this way or
+discovery is refused as another issuer's.
+
+Keycloak's own admin console is at http://keycloak:8080/admin (`admin` / `admin`,
+or whatever `KEYCLOAK_ADMIN` and `KEYCLOAK_ADMIN_PASSWORD` say). The realm and its secret are development fixtures checked into the repo;
+a deployment registers its own client in its own Keycloak and puts the secret in the
+environment.
 
 ## SMART providers
 
@@ -538,7 +600,7 @@ Settings are read from the environment, and from `.env` in local development.
 | `EPIC_ISSUER` | no | FHIR base URL of the production Epic deployment. Authorization for the `EPIC` provider is only allowed against this issuer. |
 | `CERNER_CLIENT_ID`, `CERNER_CLIENT_SECRET` | no | Client credentials for the Cerner / Oracle Health sandbox, which is registered as a confidential client. Oracle issues the secret through a Cerner Central system account, reached from the application's page in code Console. Leave either unset and the provider rejects every request, and `GET /providers` omits it. |
 | `SMART_LAUNCHER_CLIENT_ID` | no | Client id for the public SMART App Launcher. The launcher does not validate it, so a default is used when unset. |
-| `OIDC_ISSUER` | no | The identity provider users sign in with, e.g. `https://<org>.okta.com/oauth2/default` or `https://accounts.google.com`. Unset turns login off entirely: the login routes answer `503` and connecting stays anonymous. |
+| `OIDC_ISSUER` | no | The identity provider users sign in with — a Keycloak realm, `https://<host>/realms/<realm>`. Any OIDC issuer works, e.g. `https://<org>.okta.com/oauth2/default` or `https://accounts.google.com`. Unset turns login off entirely: the login routes answer `503` and connecting stays anonymous. |
 | `OIDC_CLIENT_ID` | no | The client registered with that provider. Required alongside `OIDC_ISSUER` for login to be considered configured. |
 | `OIDC_CLIENT_SECRET` | no | Omit for a public client, which authenticates with PKCE alone. PKCE is sent either way. |
 | `OIDC_SCOPES` | no | Scopes requested at sign-in. Defaults to `openid profile email`. Grants no access to health data. |
@@ -582,11 +644,16 @@ except `DATABASE_URL`, which the stack sets for itself.
 `docker compose down` stops the stack and keeps the data. `docker compose down -v`
 throws the database away, and the next `up` migrates a fresh one.
 
+Nothing starts an identity provider unless you ask for one: `docker compose --profile
+keycloak up` adds a local Keycloak to the stack, and [Running Keycloak
+locally](#running-keycloak-locally) says what to point at it. Its realm lives in
+memory, so `down` is what discards it and the next `up` imports it again.
+
 `up` builds the image the first time and then reuses it, so after changing code
 run `docker compose up --build`. Without it the stack comes up healthy on the
 previous build, which looks exactly like the change not working.
 
-Five variables tune the stack itself, all optional and all with defaults:
+Eight variables tune the stack itself, all optional and all with defaults:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
@@ -595,6 +662,8 @@ Five variables tune the stack itself, all optional and all with defaults:
 | `POSTGRES_USER` | `smartfhir` | Database user the stack creates and connects as. |
 | `POSTGRES_PASSWORD` | `smartfhir` | Its password. |
 | `POSTGRES_DB` | `smartfhir` | Database name. |
+| `KEYCLOAK_PORT` | `8080` | Port the local Keycloak listens on and is published on, under the `keycloak` profile. One value for both, because it is part of the issuer URL that the browser and the backend have to agree on. |
+| `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD` | `admin` | The admin account that Keycloak is bootstrapped with. |
 
 Postgres reads those last three only while its data directory is empty, so change
 them on a fresh volume (`docker compose down -v`) or not at all. Keep them to
@@ -827,6 +896,16 @@ keypair, so the ID tokens they exchange are genuinely signed and genuinely verif
 only the transport is faked. A token signed with the wrong key, minted for the wrong
 audience, or carrying another login's nonce is refused there for the same reason it would
 be in production.
+
+That provider is shaped like Okta, down to its endpoint paths and subject format, and
+`tests/test_keycloak_flow.py` runs the same flow against the one this deployment actually
+uses — a Keycloak realm, which is a realm under a path rather than a host, a key set with
+an encryption key beside the signing one, and an account with no `name` claim. Keeping
+both is the point: the layer has to stay one that any OIDC issuer can be pointed at, and
+a suite that only ever saw Keycloak would stop proving that. Its discovery document is a capture of what Keycloak
+26.7 really served for `keycloak/realm-smartfhir.json`, so the shape under test is that
+server's rather than a guess at it. There is no Keycloak adapter, and those tests are
+what keeps it that way.
 
 It cannot prove those recordings still describe the servers they came from, and twice they
 have not. ONC's endpoint list moved, then the mirror it moved to was pruned, and the

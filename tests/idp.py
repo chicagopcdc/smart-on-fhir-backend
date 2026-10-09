@@ -18,6 +18,7 @@ import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -154,6 +155,125 @@ def mock_discovery(document: dict[str, Any] | None = None, *, status: int = 200)
 def mock_token_endpoint(response: dict[str, Any] | Any, *, status: int = 200) -> respx.Route:
     """Register the provider's token endpoint. Returns the route to assert on."""
     route = respx.post(TOKEN_ENDPOINT)
+    if callable(response):
+        route.mock(side_effect=response)
+    else:
+        route.mock(return_value=httpx.Response(status, json=response))
+    return route
+
+
+# --- Keycloak -----------------------------------------------------------------
+#
+# The provider above is shaped like Okta. Keycloak is the other one this
+# deployment is documented against, and it differs in three ways that reach the
+# code under test:
+#
+#   * the issuer is a *realm* under a path rather than a host, so discovery
+#     lives at ``<host>/realms/<realm>/.well-known/openid-configuration``;
+#   * its key set publishes an RSA-OAEP *encryption* key beside the signing one,
+#     and lists it first;
+#   * an account with no first or last name gets no ``name`` claim at all.
+#
+# None of that is faked from memory. The discovery document is a capture of what
+# Keycloak 26.7 really serves for the realm in ``keycloak/realm-smartfhir.json``
+# (``tests/fixtures/keycloak_openid_configuration.json``), and the claim set and
+# key set below are the shapes that realm really answered with. The keypair is
+# still this module's, because a test cannot verify a signature it cannot make.
+
+KEYCLOAK_ISSUER = "http://keycloak:8080/realms/smartfhir"
+KEYCLOAK_CLIENT_ID = "smart-on-fhir-backend"
+KEYCLOAK_CLIENT_SECRET = "dev-client-secret-not-for-production"
+
+KEYCLOAK_ENCRYPTION_KEY_ID = "keycloak-encryption-key"
+
+
+_KEYCLOAK_CONFIGURATION = Path(__file__).parent / "fixtures" / "keycloak_openid_configuration.json"
+
+
+def keycloak_discovery_document(**overrides: Any) -> dict[str, Any]:
+    """What the realm publishes, as captured from a running Keycloak.
+
+    Read here rather than through ``app_harness.load_fixture`` so that this
+    module stays what it says it is: a fake provider that imports none of the
+    application it is pointed at.
+    """
+    captured = json.loads(_KEYCLOAK_CONFIGURATION.read_text(encoding="utf-8"))
+    return {**captured, **overrides}
+
+
+def keycloak_jwks() -> dict[str, Any]:
+    """The realm's key set: an encryption key, then the signing key.
+
+    Keycloak publishes both at one ``jwks_uri`` and puts the encryption key
+    first. It is an RSA key with ``alg: RSA-OAEP``, which is not a signing
+    algorithm and cannot be built into one — so anything that reads this set has
+    to skip it and keep looking rather than take the first RSA key it sees or
+    give up on the set entirely. Included for exactly that reason.
+    """
+    encryption = json.loads(RSAAlgorithm.to_jwk(signing_key().public_key()))
+    encryption.update(
+        {"kid": KEYCLOAK_ENCRYPTION_KEY_ID, "use": "enc", "alg": "RSA-OAEP"}
+    )
+    return {"keys": [encryption, *jwks()["keys"]]}
+
+
+def keycloak_id_token(
+    *,
+    nonce: str,
+    subject: str = "f4bed77d-e6d4-47f4-9b08-39c1621ee421",
+    issuer: str = KEYCLOAK_ISSUER,
+    audience: str = KEYCLOAK_CLIENT_ID,
+    email: str | None = "avery@example.org",
+    email_verified: bool = True,
+    name: str | None = "Avery Diaz",
+    preferred_username: str | None = "avery",
+    **overrides: Any,
+) -> str:
+    """An ID token with the claims a Keycloak realm really puts in one.
+
+    ``sub`` is a realm-scoped UUID rather than Okta's ``00u…`` handle, and the
+    extra claims — ``typ``, ``azp``, ``sid``, ``acr`` — are carried so that a
+    token going through the verification path is the one a deployment would
+    actually hand it. Passing ``name=None`` gives the token of an account with
+    no first or last name on it, which is the one Keycloak omits it from.
+    """
+    claims: dict[str, Any] = {
+        "typ": "ID",
+        "azp": audience,
+        "sid": "Xy3fhwpVd_yevyJiVttZpJmd",
+        "acr": "1",
+        "auth_time": int(datetime.now(timezone.utc).timestamp()),
+        **overrides,
+    }
+    if preferred_username is not None:
+        claims["preferred_username"] = preferred_username
+    return id_token(
+        nonce=nonce,
+        subject=subject,
+        issuer=issuer,
+        audience=audience,
+        email=email,
+        email_verified=email_verified,
+        name=name,
+        **claims,
+    )
+
+
+def mock_keycloak_discovery(
+    document: dict[str, Any] | None = None, *, status: int = 200
+) -> None:
+    """Register the realm's discovery endpoint with respx."""
+    body = keycloak_discovery_document() if document is None else document
+    respx.get(KEYCLOAK_ISSUER + "/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(status, json=body)
+    )
+
+
+def mock_keycloak_token_endpoint(
+    response: dict[str, Any] | Any, *, status: int = 200
+) -> respx.Route:
+    """Register the realm's token endpoint. Returns the route to assert on."""
+    route = respx.post(keycloak_discovery_document()["token_endpoint"])
     if callable(response):
         route.mock(side_effect=response)
     else:

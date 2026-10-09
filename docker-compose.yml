@@ -122,5 +122,68 @@ services:
       retries: 5
       start_period: 15s
 
+  # The identity provider this deployment signs users in with, run locally: the
+  # same software, so what works here is what works in front of a real realm
+  # rather than a stand-in for one. Off unless asked for: `docker compose --profile
+  # keycloak up`. Nothing in the stack depends on it — the backend reads the
+  # realm's configuration at the first sign-in rather than at startup, and a
+  # deployment with OIDC_ISSUER unset never reaches for one at all.
+  #
+  # To use it, put these in .env (the client and the user are in
+  # keycloak/realm-smartfhir.json, imported on first start):
+  #
+  #   OIDC_ISSUER=http://keycloak:8080/realms/smartfhir
+  #   OIDC_CLIENT_ID=smart-on-fhir-backend
+  #   OIDC_CLIENT_SECRET=dev-client-secret-not-for-production
+  #
+  # and add `127.0.0.1 keycloak` to /etc/hosts. An OIDC issuer is one string
+  # that both this backend and the browser have to resolve to the same server,
+  # and there is no such string for `localhost`: inside the app container that
+  # is the app. Naming the compose service works for both — compose's DNS
+  # resolves it on the network, the hosts entry resolves it on your machine —
+  # and it keeps working if you run the backend under Poetry instead.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7
+    profiles: ["keycloak"]
+    # start-dev means an in-memory database and no TLS, which is right for a
+    # throwaway realm and wrong for anything else; it prints as much on boot.
+    # --import-realm reads the mount below, and only on a first start, since the
+    # realm is already there on later ones.
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # The realm import gives no admin, so the bootstrap one is how you reach
+      # the console at http://keycloak:${KEYCLOAK_PORT:-8080}/admin.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HTTP_ENABLED: "true"
+      # One port, published unchanged, because KC_HOSTNAME is what goes into
+      # every URL Keycloak publishes — the issuer, the authorization endpoint,
+      # the JWKS — and a container port that differed from the host one would
+      # put an address in there that only one side of the flow can reach.
+      KC_HTTP_PORT: ${KEYCLOAK_PORT:-8080}
+      KC_HOSTNAME: http://keycloak:${KEYCLOAK_PORT:-8080}
+      # The issuer must be spelled the same way in OIDC_ISSUER or discovery is
+      # refused, so the hostname above is set rather than inferred per request.
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:${KEYCLOAK_PORT:-8080}"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # Asks for the realm's own discovery document rather than for the port,
+      # so the container goes healthy when the thing the backend needs is being
+      # served — a failed import leaves Keycloak up and the realm missing. The
+      # image carries no curl and CMD-SHELL is /bin/sh, hence bash's /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/${KEYCLOAK_PORT:-8080}; printf "GET /realms/smartfhir/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; grep -q "200 OK" <&3'
+      interval: 30s
+      start_interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 volumes:
   pgdata:
